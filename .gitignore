@@ -1,1 +1,77 @@
- 
+# Data files
+data/merra2/*.nc4
+data/prism/*.zip
+data/dem/*.bil
+data/dem/*.hdr
+
+# Model files
+models/prithvi/*
+Prithvi-WxC/*
+*.pt
+*.pth
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and databases
+*.log
+*.sqlite
+wandb/
+logs/
+lightning_logs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Cache directories
+cache/
+.cache/
+__pycache__/
+
+# Keep
+!data/merra2/.gitkeep
+!data/prism/.gitkeep
+!data/dem/.gitkeep 

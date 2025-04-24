@@ -4,6 +4,7 @@ import numpy as np
 import xarray as xr
 import rioxarray
 import rasterio
+from rasterio import enums
 from typing import Dict, List, Tuple, Optional, Union
 import glob
 import zipfile
@@ -32,6 +33,13 @@ def load_merra2_data(file_path: str, variables: List[str]) -> xr.Dataset:
         # Select only the requested variables
         ds = ds[variables]
         
+        # Convert temperature variables from Kelvin to Celsius
+        temp_vars = ['T2MMAX', 'T2MMEAN', 'T2MMIN']
+        for var in temp_vars:
+            if var in ds:
+                ds[var] = ds[var] - 273.15
+                ds[var].attrs['units'] = 'degC'
+        
         return ds
     except Exception as e:
         raise RuntimeError(f"Error loading MERRA-2 data: {str(e)}")
@@ -41,7 +49,7 @@ def load_prism_data(prism_dir: str, date: str, variables: List[str]) -> Dict[str
     """Load PRISM data from zip files.
     
     Args:
-        prism_dir: Directory containing PRISM zip files.
+        prism_dir: Directory containing PRISM files.
         date: Date string in format YYYYMMDD.
         variables: List of PRISM variables to load (e.g., ['tdmean', 'ppt']).
         
@@ -60,23 +68,74 @@ def load_prism_data(prism_dir: str, date: str, variables: List[str]) -> Dict[str
         
         zip_file = zip_files[0]
         
-        # Extract and load the GeoTIFF file
+        # Extract and load the data files
         with tempfile.TemporaryDirectory() as temp_dir:
             with zipfile.ZipFile(zip_file, 'r') as z:
-                # Find the .tif file
-                tif_files = [f for f in z.namelist() if f.endswith('.tif')]
-                if not tif_files:
+                # Extract all files
+                z.extractall(temp_dir)
+                
+                # Base name for all files
+                base_name = f"prism_{var}_us_25m_{date}"
+                
+                # Load the GeoTIFF file with proper CRS
+                tif_file = os.path.join(temp_dir, f"{base_name}.tif")
+                if not os.path.exists(tif_file):
                     raise FileNotFoundError(f"No .tif file found in {zip_file}")
                 
-                tif_file = tif_files[0]
-                z.extract(tif_file, temp_dir)
-                
-                # Load with rioxarray
-                tif_path = os.path.join(temp_dir, tif_file)
-                da = rioxarray.open_rasterio(tif_path)
+                # Read with rioxarray, explicitly setting CRS to NAD83
+                da = rioxarray.open_rasterio(tif_file)
+                da.rio.write_crs("EPSG:4269", inplace=True)  # NAD83
                 
                 # Standardize the dimensions
                 da = da.squeeze(drop=True)  # Remove single-dimension axes
+                
+                # Set variable name
+                da.name = var
+                
+                # Read metadata from XML for proper attributes
+                xml_file = os.path.join(temp_dir, f"{base_name}.tif.aux.xml")
+                if os.path.exists(xml_file):
+                    try:
+                        import xml.etree.ElementTree as ET
+                        tree = ET.parse(xml_file)
+                        root = tree.getroot()
+                        stats = {
+                            elem.attrib['key']: float(elem.text)
+                            for elem in root.findall(".//MDI")
+                            if elem.attrib['key'].startswith('STATISTICS_')
+                        }
+                        
+                        # Set attributes based on variable type
+                        if var == 'tdmean':
+                            da.attrs.update({
+                                'units': 'degC',
+                                'long_name': 'Mean Temperature',
+                                'grid_mapping': 'NAD83',
+                                'valid_range': [stats.get('STATISTICS_MINIMUM', -100.0),
+                                              stats.get('STATISTICS_MAXIMUM', 100.0)],
+                                '_FillValue': -9999.0
+                            })
+                        elif var == 'ppt':
+                            da.attrs.update({
+                                'units': 'mm',
+                                'long_name': 'Precipitation',
+                                'grid_mapping': 'NAD83',
+                                'valid_range': [0.0, stats.get('STATISTICS_MAXIMUM', 1000.0)],
+                                '_FillValue': -9999.0
+                            })
+                        
+                        # Add statistics to attributes
+                        da.attrs.update({
+                            'min_value': stats.get('STATISTICS_MINIMUM'),
+                            'max_value': stats.get('STATISTICS_MAXIMUM'),
+                            'mean_value': stats.get('STATISTICS_MEAN'),
+                            'std_value': stats.get('STATISTICS_STDDEV')
+                        })
+                    except Exception as e:
+                        print(f"Warning: Could not parse XML stats: {e}")
+                
+                # Mask no-data values
+                da = da.where(da > da.attrs['_FillValue'])
                 
                 result[var] = da
     
@@ -105,26 +164,72 @@ def load_dem_data(dem_path: str) -> xr.DataArray:
         raise RuntimeError(f"Error loading DEM data: {str(e)}")
 
 
-def reproject_merra2_to_prism(merra2_data: xr.Dataset, prism_sample: xr.DataArray) -> xr.Dataset:
+def reproject_merra2_to_prism(merra2_ds: xr.Dataset, prism_da: xr.DataArray) -> xr.Dataset:
     """Reproject MERRA-2 data to match PRISM grid.
     
-    This is a preprocessing step to align the data for visualization and comparison.
-    The actual downscaling will be handled by the model.
-    
     Args:
-        merra2_data: MERRA-2 dataset.
-        prism_sample: PRISM data array to use as reference grid.
+        merra2_ds: MERRA-2 dataset with variables to reproject.
+        prism_da: PRISM data array to use as reference for target grid.
         
     Returns:
-        Reprojected MERRA-2 dataset.
+        MERRA-2 dataset reprojected to PRISM grid.
     """
-    # This is a placeholder for a more complex reprojection
-    # In practice, this would use rioxarray and pyproj to properly reproject
-    # with correct handling of coordinate reference systems
+    # Create a copy to avoid modifying the input
+    merra2_ds = merra2_ds.copy()
     
-    # For now, just return the original dataset
-    # To be implemented based on the actual data format and projection
-    return merra2_data
+    # Check and fix latitude orientation
+    # MERRA-2 should have latitudes from south to north
+    for var in merra2_ds.data_vars:
+        if 'lat' in merra2_ds[var].coords:
+            lats = merra2_ds[var].lat.values
+            if lats[0] > lats[-1]:  # If latitudes are north to south
+                print("Flipping MERRA-2 data to ensure south-to-north orientation")
+                merra2_ds[var] = merra2_ds[var].reindex(lat=list(reversed(lats)))
+    
+    # Ensure MERRA-2 has proper CRS (WGS84)
+    for var in merra2_ds.data_vars:
+        if not hasattr(merra2_ds[var], 'rio'):
+            merra2_ds[var] = merra2_ds[var].rio.set_spatial_dims(x_dim='lon', y_dim='lat')
+        merra2_ds[var] = merra2_ds[var].rio.write_crs("EPSG:4326")  # WGS84
+    
+    # Create output dataset
+    reprojected_ds = xr.Dataset()
+    
+    # Reproject each variable
+    for var in merra2_ds.data_vars:
+        # Get the MERRA-2 data array
+        da = merra2_ds[var]
+        
+        # Convert longitude from 0-360 to -180-180 if needed
+        if (da.lon > 180).any():
+            da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
+            da = da.roll(lon=(da.dims['lon'] // 2), roll_coords=True)
+        
+        # Reproject to match PRISM grid using bilinear interpolation
+        reprojected = da.rio.reproject_match(
+            prism_da,
+            resampling=rasterio.enums.Resampling.bilinear
+        )
+        
+        # Fill NaN values with nearest valid data
+        if np.isnan(reprojected).any():
+            reprojected = reprojected.rio.reproject_match(
+                prism_da,
+                resampling=rasterio.enums.Resampling.nearest
+            ).where(~np.isnan(reprojected), reprojected)
+        
+        # Add to output dataset
+        reprojected_ds[var] = reprojected
+        
+        # Copy attributes
+        reprojected_ds[var].attrs = da.attrs.copy()
+        reprojected_ds[var].attrs.update({
+            'grid_mapping': 'NAD83',  # Target CRS
+            'resampling_method': 'bilinear',
+            'original_grid': 'MERRA-2'
+        })
+    
+    return reprojected_ds
 
 
 def normalize_data(data: Union[xr.Dataset, xr.DataArray], 
@@ -231,7 +336,7 @@ def prepare_merra2_prism_pair(merra2_file: str,
                              merra2_vars: List[str],
                              prism_vars: List[str],
                              dem_path: Optional[str] = None,
-                             normalize: bool = True) -> Dict[str, Union[xr.Dataset, xr.DataArray, Dict]]:
+                             normalize: bool = False) -> Dict[str, Union[xr.Dataset, xr.DataArray, Dict]]:
     """Prepare a matched pair of MERRA-2 and PRISM data for the same date.
     
     Args:
@@ -256,6 +361,11 @@ def prepare_merra2_prism_pair(merra2_file: str,
     dem_data = None
     if dem_path:
         dem_data = load_dem_data(dem_path)
+    
+    # Reproject MERRA-2 data to match PRISM grid
+    # Use the first PRISM variable as reference for the target grid
+    first_prism_var = next(iter(prism_data.values()))
+    merra2_data = reproject_merra2_to_prism(merra2_data, first_prism_var)
     
     result = {
         'merra2': merra2_data,
