@@ -74,4 +74,7 @@ __pycache__/
 # Keep
 !data/merra2/.gitkeep
 !data/prism/.gitkeep
-!data/dem/.gitkeep 
+!data/dem/.gitkeep
+
+# Prithvi-WxC repository
+Prithvi-WxC/ 
