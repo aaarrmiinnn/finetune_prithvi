@@ -1,73 +1,104 @@
-# Progress Tracking
+# Project Progress
 
 ## What Works
-1. Environment Setup:
-   - Conda environment creation
-   - Python package installation
-   - GDAL integration
+1. Model Architecture
+   - PrithviDownscaler implementation complete
+   - PrithviWxC backbone integration
+   - Spatial dimension preservation throughout network
+   - Memory-optimized for Mac M1/M2 hardware
 
-2. Data Organization:
-   - Directory structure established
-   - Input data files present
-   - File formats verified
+2. Data Pipeline
+   - MERRA2 data loading and preprocessing
+   - PRISM data integration
+   - Patch-based processing
+   - Basic data augmentation
 
-3. Configuration:
-   - Base YAML configuration
-   - Parameter settings defined
-   - Directory paths configured
+3. Training Setup
+   - Configuration system
+   - Loss functions (MAE + MSE)
+   - Optimizer setup (AdamW)
+   - Learning rate scheduling
 
 ## What's Left to Build
-1. Data Processing Pipeline:
-   - MERRA2 data loader
-   - PRISM data loader
-   - DEM integration
-   - Patch creation
-   - Data augmentation
+1. Training Pipeline
+   - [ ] Complete dataset splitting logic
+   - [ ] Implement validation metrics
+   - [ ] Add early stopping
+   - [ ] Setup model checkpointing
 
-2. Model Implementation:
-   - Prithvi model integration
-   - Upsampling layers
-   - Loss functions
-   - Training loop
-   - Validation metrics
+2. Model Improvements
+   - [ ] Fine-tune hyperparameters
+   - [ ] Implement additional loss functions
+   - [ ] Add model ensembling
+   - [ ] Optimize inference speed
 
-3. Training Infrastructure:
-   - Logging setup
-   - Checkpoint management
-   - Performance monitoring
-   - Visualization tools
-
-4. Documentation:
-   - Usage instructions
-   - API documentation
-   - Example notebooks
-   - Performance metrics
+3. Evaluation
+   - [ ] Implement comprehensive metrics
+   - [ ] Create visualization tools
+   - [ ] Add performance benchmarks
+   - [ ] Generate evaluation reports
 
 ## Current Status
-- Initial setup phase completed
-- Core dependencies installed
-- Data files organized
-- Configuration structure defined
-- Ready to begin implementation phase
+- Model architecture is complete and tested
+- Basic training loop implemented
+- Working on dataset splitting and validation
+- Need to address memory optimization
+- Preparing for initial training runs
 
 ## Known Issues
-None identified yet - project is in initial setup phase
+1. Data Handling
+   - Limited number of dates available (March 1-2, 2025)
+   - Need more diverse training data
+   - Memory constraints with large patches
+
+2. Model
+   - Key mismatches between dataset and model ('merra2_input'/'prism_target' vs 'input'/'target')
+   - Memory usage needs optimization
+   - Validation metrics not yet implemented
+
+3. Training
+   - Dataset splitting needs improvement
+   - Batch size limited by memory
+   - Learning rate tuning required
 
 ## Evolution of Decisions
-1. Environment:
-   - Chose Python 3.8 for compatibility
-   - Selected conda for environment management
-   - Included GDAL for geospatial processing
 
-2. Model Architecture:
-   - Selected Prithvi-100M as base model
-   - Planned DEM integration
-   - Defined upsampling strategy
+### Architecture Decisions
+1. Initial Design
+   - Started with basic PrithviWxC integration
+   - Simple upsampling approach
 
-3. Training Strategy:
-   - Implemented mixed precision
-   - Chose multiple loss components
-   - Defined patch-based approach
+2. Current Implementation
+   - Modified for spatial dimension preservation
+   - Memory-optimized architecture
+   - Progressive upsampling with residual connections
+
+### Training Strategy
+1. Original Plan
+   - Large batch sizes
+   - Complex loss functions
+   - Multiple input sources
+
+2. Current Approach
+   - Reduced batch size for memory
+   - Simplified loss combination
+   - Focused on essential inputs
+
+### Next Steps
+1. Immediate Tasks
+   - Fix dataset key naming
+   - Implement proper data splitting
+   - Add validation metrics
+
+2. Short-term Goals
+   - Complete initial training run
+   - Evaluate model performance
+   - Optimize memory usage
+
+3. Long-term Plans
+   - Expand training data
+   - Implement advanced features
+   - Improve model efficiency
 
 # Progress Log
 
