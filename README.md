@@ -106,19 +106,57 @@ For Mac M1/M2 users, the configuration is already optimized with:
 
 For systems with more memory, you can increase these values for better performance.
 
-## Training
+## Running Scripts
 
-To train the model:
+### Consolidated Script (Recommended)
+
+The project provides a single consolidated script `prithvi.sh` that combines all functionality:
 
 ```bash
-# For local training
+# Show available commands and options
+./prithvi.sh --help
+
+# Basic training
+./prithvi.sh train
+
+# Data exploration
+./prithvi.sh explore
+
+# Training with Weights & Biases
+./prithvi.sh train --wandb
+
+# Resume training from a checkpoint with W&B
+./prithvi.sh train --wandb --resume logs/path/to/checkpoint.ckpt
+
+# Training on a cluster
+./prithvi.sh cluster
+```
+
+This consolidated script also handles environment setup:
+```bash
+# Setup conda environment if needed and run training
+./prithvi.sh train --install
+```
+
+### Individual Scripts
+
+The project also includes several specialized shell scripts if needed:
+
+```bash
+# Explore and visualize the input data
+./explore_data.sh
+
+# Basic training script with memory optimization for Mac
 ./train.sh
 
-# For cluster training with SLURM
-./cluster_train.sh
+# Full setup and training (creates conda env if needed)
+./run.sh
 
-# For training with Weights & Biases tracking and custom parameters
+# Training with Weights & Biases tracking and custom parameters
 ./train_wandb.sh [options]
+
+# Cluster training with SLURM integration
+./cluster_train.sh
 ```
 
 The `train_wandb.sh` script provides additional options:
@@ -134,7 +172,7 @@ Options:
   --help              Show this help message
 ```
 
-Or run Python directly:
+You can also run Python directly:
 
 ```bash
 python src/main.py
