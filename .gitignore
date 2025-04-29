@@ -136,6 +136,13 @@ htmlcov/
 .hypothesis/
 .pytest_cache/
 
+# Temporary files
+temp/
+tmp/
+.env
+*_temp.yaml
+check_*.py
+
 # Miscellaneous
 temp/
 tmp/

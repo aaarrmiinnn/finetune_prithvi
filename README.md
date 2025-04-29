@@ -116,6 +116,22 @@ To train the model:
 
 # For cluster training with SLURM
 ./cluster_train.sh
+
+# For training with Weights & Biases tracking and custom parameters
+./train_wandb.sh [options]
+```
+
+The `train_wandb.sh` script provides additional options:
+```
+Options:
+  --cluster           Run in cluster mode (configures for GPU)
+  --resume PATH       Resume from checkpoint PATH
+  --entity NAME       Set wandb entity (username or team name)
+  --project NAME      Set wandb project name
+  --name NAME         Set run name in wandb
+  --epochs N          Set number of epochs
+  --batch N           Set batch size
+  --help              Show this help message
 ```
 
 Or run Python directly:
