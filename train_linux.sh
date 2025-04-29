@@ -16,11 +16,28 @@ echo "Using GPU for training"
 # Create directories if they don't exist
 mkdir -p logs
 mkdir -p models/checkpoints
+mkdir -p cache
+
+# Create a temporary modified config file that removes the problematic parameter
+CONFIG_FILE="src/config/config.yaml"
+TEMP_CONFIG_FILE="src/config/config_linux_temp.yaml"
+
+# Create a copy of the config file with modified cluster settings
+cp $CONFIG_FILE $TEMP_CONFIG_FILE
+
+# Update the hardware and cluster settings
+sed -i 's/accelerator: "cpu"/accelerator: "gpu"/' $TEMP_CONFIG_FILE
+sed -i 's/devices: 1/devices: 1/' $TEMP_CONFIG_FILE
+sed -i 's/precision: 32/precision: 16/' $TEMP_CONFIG_FILE
+sed -i 's/find_unused_parameters: false/# find_unused_parameters disabled for compatibility/' $TEMP_CONFIG_FILE
+sed -i 's/strategy: "ddp"/strategy: "auto"/' $TEMP_CONFIG_FILE
 
 # Run the training script with GPU optimizations
 python src/main.py \
-  --config src/config/config.yaml \
-  --mode train \
-  --cluster
+  --config $TEMP_CONFIG_FILE \
+  --mode train
+
+# Clean up the temporary config file
+rm $TEMP_CONFIG_FILE
 
 echo "Training completed!" 

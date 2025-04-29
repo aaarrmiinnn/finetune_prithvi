@@ -6,6 +6,7 @@ import subprocess
 import logging
 import time
 import platform
+import shutil
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +27,7 @@ def run_training():
     # Ensure the logs and checkpoints directories exist
     os.makedirs("logs", exist_ok=True)
     os.makedirs("models/checkpoints", exist_ok=True)
+    os.makedirs("cache", exist_ok=True)
     
     # Record the start time
     start_time = time.time()
@@ -38,6 +40,13 @@ def run_training():
     else:  # Linux or other
         script_path = "./train_linux.sh"
         logger.info(f"Detected {system}, using train_linux.sh")
+        
+        # Check if nvcc is available (for CUDA)
+        nvcc_available = shutil.which("nvcc") is not None
+        if not nvcc_available:
+            logger.warning("CUDA nvcc not found in PATH. Training will continue but may not use GPU acceleration.")
+            logger.info("Setting CUDA_VISIBLE_DEVICES= to disable GPU usage")
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
     
     # Make sure the script is executable
     os.chmod(script_path, 0o755)
@@ -69,6 +78,11 @@ def run_training():
             # Check for NaN-related issues
             if "NaN" in line or "Inf" in line:
                 logger.warning(f"NaN/Inf detected: {line}")
+                
+            # Check for specific errors
+            if "find_unused_parameters" in line and "unexpected keyword argument" in line:
+                logger.error("PyTorch Lightning version incompatibility detected: 'find_unused_parameters' error")
+                logger.info("Please update the config.yaml file to remove this parameter or upgrade PyTorch Lightning")
         
         # Wait for the process to complete
         return_code = process.wait()
