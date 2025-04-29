@@ -110,14 +110,19 @@ For systems with more memory, you can increase these values for better performan
 
 ### Consolidated Script (Recommended)
 
-The project provides a single consolidated script `prithvi.sh` that combines all functionality:
+The project provides a single consolidated script `prithvi.sh` that combines all functionality and automatically detects your hardware platform:
 
 ```bash
 # Show available commands and options
 ./prithvi.sh --help
 
-# Basic training
+# Basic training with automatic hardware detection (CUDA/MPS/CPU)
 ./prithvi.sh train
+
+# Force using a specific device
+./prithvi.sh train --device cuda    # Force NVIDIA GPU
+./prithvi.sh train --device mps     # Force Mac GPU
+./prithvi.sh train --device cpu     # Force CPU
 
 # Data exploration
 ./prithvi.sh explore
@@ -137,6 +142,24 @@ This consolidated script also handles environment setup:
 # Setup conda environment if needed and run training
 ./prithvi.sh train --install
 ```
+
+### Cross-Platform Support
+
+The script automatically detects and configures for different hardware:
+
+- **Linux with NVIDIA GPU**: 
+  - Uses CUDA acceleration
+  - Enables mixed precision for faster training
+  - Increases batch size for better GPU utilization
+
+- **macOS with M1/M2**:
+  - Uses MPS acceleration
+  - Optimizes memory usage with `PYTORCH_MPS_HIGH_WATERMARK_RATIO`
+  - Maintains smaller batch size to avoid memory issues
+
+- **Any platform without GPU**:
+  - Falls back to CPU computation
+  - Adjusts settings for CPU efficiency
 
 ### Individual Scripts
 

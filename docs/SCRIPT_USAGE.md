@@ -22,6 +22,7 @@ The `prithvi.sh` script is a unified command-line interface that combines all th
 
 - `--help`: Display help information
 - `--install`: Create and set up the conda environment if it doesn't exist
+- `--device DEVICE`: Force a specific device type: 'cuda', 'mps', or 'cpu'
 
 ### Training Options
 
@@ -35,6 +36,16 @@ When using the `train` command, the following options are available:
 - `--batch N`: Set batch size
 - `--resume PATH`: Resume from checkpoint PATH
 
+### Platform Detection
+
+The script automatically detects your hardware platform and configures the appropriate settings:
+
+- **macOS with M1/M2**: Uses MPS (Metal Performance Shaders) acceleration
+- **Linux with NVIDIA GPU**: Uses CUDA GPU acceleration
+- **Any platform without GPU**: Falls back to CPU
+
+You can override the automatic detection using the `--device` option.
+
 ### Examples
 
 1. **Show help information**:
@@ -42,35 +53,64 @@ When using the `train` command, the following options are available:
    ./prithvi.sh --help
    ```
 
-2. **Basic training**:
+2. **Basic training with automatic platform detection**:
    ```bash
    ./prithvi.sh train
    ```
 
-3. **Data exploration**:
+3. **Force using CUDA GPU (useful for multi-GPU systems)**:
+   ```bash
+   ./prithvi.sh train --device cuda
+   ```
+
+4. **Force using CPU (even if GPU is available)**:
+   ```bash
+   ./prithvi.sh train --device cpu
+   ```
+
+5. **Data exploration**:
    ```bash
    ./prithvi.sh explore
    ```
 
-4. **Training with W&B tracking**:
+6. **Training with W&B tracking**:
    ```bash
    ./prithvi.sh train --wandb --entity "your-username" --project "your-project"
    ```
 
-5. **Resuming training from a checkpoint**:
+7. **Resuming training from a checkpoint on a specific device**:
    ```bash
-   ./prithvi.sh train --resume logs/merra2-prism-downscaling/version_1/checkpoints/epoch=10.ckpt
+   ./prithvi.sh train --resume logs/merra2-prism-downscaling/version_1/checkpoints/epoch=10.ckpt --device cuda
    ```
 
-6. **Training on a cluster**:
+8. **Training on a cluster**:
    ```bash
    ./prithvi.sh cluster
    ```
 
-7. **Training with environment setup**:
+9. **Training with environment setup**:
    ```bash
    ./prithvi.sh train --install
    ```
+
+## Hardware-Specific Optimizations
+
+The script applies different optimizations based on the detected hardware:
+
+### CUDA (NVIDIA GPU)
+- Uses mixed precision (16-bit) for faster training
+- Automatically increases batch size for better GPU utilization
+- Sets appropriate CUDA environment variables
+- Uses the GPU accelerator in PyTorch Lightning
+
+### MPS (Mac M1/M2)
+- Sets `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.7` for better memory management
+- Keeps smaller batch sizes to avoid memory issues
+- Uses the MPS accelerator in PyTorch Lightning
+
+### CPU
+- Configures for CPU-only operation
+- Adjusts parameters for CPU efficiency
 
 ## Individual Scripts
 
@@ -89,7 +129,8 @@ While the consolidated script is recommended, the project also provides individu
 3. **Completeness**: All functionality available in one place
 4. **Maintainability**: Easier to update a single script than multiple ones
 5. **Flexibility**: Combines options from all scripts
-6. **Advanced Features**: Automatic detection of environment type (local/cluster)
+6. **Advanced Features**: Automatic detection of hardware and environment
+7. **Cross-Platform**: Works across macOS, Linux, and different hardware configurations
 
 ## Script Dependencies
 
@@ -98,8 +139,24 @@ The consolidated script handles all necessary dependencies:
 - Python 3.8
 - Conda environment management
 - PYTHONPATH setting
-- MPS memory optimization for Mac
+- Hardware detection and configuration
 - Directory creation
+
+## Troubleshooting
+
+### Common Issues
+
+1. **MPS-related errors on Linux**:
+   - The script now automatically detects the platform and avoids MPS-specific settings on Linux
+   - You can force a specific device with `--device cuda` or `--device cpu`
+
+2. **CUDA not detected**:
+   - Ensure NVIDIA drivers are installed and working
+   - Try running `nvidia-smi` to verify GPU accessibility
+   - Use `--device cuda` to force CUDA if detection fails
+
+3. **Environment Issues**:
+   - Use the `--install` option to create and set up the conda environment
 
 ## Migration from Individual Scripts
 

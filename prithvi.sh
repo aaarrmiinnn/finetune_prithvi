@@ -21,24 +21,71 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
     echo "  --batch N          Set batch size"
     echo "  --resume PATH      Resume from checkpoint PATH"
     echo "  --install          Create conda environment if it doesn't exist"
+    echo "  --device DEVICE    Force specific device: 'cuda', 'mps', or 'cpu'"
     echo ""
     echo "Examples:"
     echo "  $0 train                           # Basic training"
     echo "  $0 train --wandb                   # Training with W&B"
     echo "  $0 train --wandb --entity user     # W&B with custom entity"
+    echo "  $0 train --device cuda             # Force CUDA GPU usage"
     echo "  $0 explore                         # Data exploration"
     echo "  $0 cluster                         # Train on cluster"
     exit 0
 fi
 
-# Set environment variables for Mac MPS memory optimization
-if [[ "$(uname)" == "Darwin"* ]]; then
-    # Increase MPS memory allocation on Mac
-    export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.7
-fi
-
 # Create necessary directories
 mkdir -p logs cache models/cache
+
+# Detect hardware platform and set appropriate environment variables
+# Default to null - will be determined later
+DEVICE_TYPE=""
+FORCE_DEVICE=""
+
+# Check for --device flag to override automatic detection
+for ((i=1; i<=$#; i++)); do
+    if [[ "${!i}" == "--device" ]]; then
+        j=$((i+1))
+        if [[ $j -le $# ]]; then
+            FORCE_DEVICE="${!j}"
+            echo "Forcing device: $FORCE_DEVICE"
+        fi
+    fi
+done
+
+# Detect platform and set appropriate environment variables if not forced
+if [[ -z "$FORCE_DEVICE" ]]; then
+    if [[ "$(uname)" == "Darwin"* ]]; then
+        # macOS - check if MPS is available
+        echo "Detected macOS platform"
+        if python -c "import torch; print(torch.backends.mps.is_available())" 2>/dev/null | grep -q "True"; then
+            echo "MPS acceleration is available"
+            DEVICE_TYPE="mps"
+            # Increase MPS memory allocation on Mac
+            export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.7
+        else
+            echo "MPS acceleration is not available, using CPU"
+            DEVICE_TYPE="cpu"
+        fi
+    elif [[ "$(uname)" == "Linux"* ]]; then
+        echo "Detected Linux platform"
+        # Check for NVIDIA GPU
+        if command -v nvidia-smi &> /dev/null && nvidia-smi -L &> /dev/null; then
+            echo "NVIDIA GPU detected"
+            DEVICE_TYPE="cuda"
+            # Set CUDA environment variables for better performance
+            export CUDA_VISIBLE_DEVICES="0"  # Use first GPU by default
+        else
+            echo "No NVIDIA GPU detected, using CPU"
+            DEVICE_TYPE="cpu"
+        fi
+    else
+        echo "Unknown platform, defaulting to CPU"
+        DEVICE_TYPE="cpu"
+    fi
+else
+    # Use forced device type
+    DEVICE_TYPE="$FORCE_DEVICE"
+fi
 
 # Parse the main command
 COMMAND=${1:-train}  # Default to train if no command provided
@@ -80,6 +127,42 @@ fi
 # Set Python path to include the project
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
+# Update the config file with the detected device
+update_config_device() {
+    local config_file=$1
+    
+    python - <<EOF
+import yaml
+
+# Load the config
+with open('$config_file', 'r') as f:
+    config = yaml.safe_load(f)
+
+# Update device settings based on detected type
+device_type = '$DEVICE_TYPE'
+
+# Update the model device
+config['model']['device'] = device_type
+
+# Update hardware settings
+if device_type == 'mps':
+    config['hardware']['accelerator'] = 'mps'
+elif device_type == 'cuda':
+    config['hardware']['accelerator'] = 'gpu'
+    # Potentially increase batch size for GPU
+    if config['training']['batch_size'] == 1:
+        config['training']['batch_size'] = 2
+    # Enable mixed precision for CUDA
+    config['training']['precision'] = 16
+else:
+    config['hardware']['accelerator'] = 'cpu'
+
+# Save the updated config
+with open('$config_file', 'w') as f:
+    yaml.dump(config, f)
+EOF
+}
+
 # Process command
 case "$COMMAND" in
     train)
@@ -93,12 +176,13 @@ case "$COMMAND" in
         done
         
         if [[ "$USE_WANDB" == "true" ]]; then
-            # Remove --wandb from arguments
+            # Remove --wandb and --device from arguments
             ARGS=()
             for arg in "$@"; do
-                if [[ "$arg" != "--wandb" && "$arg" != "--install" ]]; then
+                if [[ "$arg" != "--wandb" && "$arg" != "--install" && "$arg" != "--device" && "$prev_arg" != "--device" ]]; then
                     ARGS+=("$arg")
                 fi
+                prev_arg="$arg"
             done
             
             # Configure wandb (login if needed)
@@ -195,9 +279,13 @@ with open('$CONFIG_FILE', 'w') as f:
     yaml.dump(config, f)
 EOF
             
+            # Update device settings in the config
+            update_config_device "$CONFIG_FILE"
+            
             # Run the training script with W&B
             echo "Starting training with Weights & Biases logging"
             echo "Config: $CONFIG_FILE"
+            echo "Device: $DEVICE_TYPE"
             echo "Cluster mode: ${CLUSTER_MODE:-disabled}"
             echo "Resume from: ${RESUME_ARG:-N/A}"
             
@@ -208,8 +296,37 @@ EOF
             
         else
             # Basic training mode
+            # Create a temporary config file with device settings
+            CONFIG_FILE="src/config/config_temp.yaml"
+            cp src/config/config.yaml $CONFIG_FILE
+            
+            # Update device settings in the config
+            update_config_device "$CONFIG_FILE"
+            
             echo "Starting training..."
-            python src/main.py "$@"
+            echo "Device: $DEVICE_TYPE"
+            
+            # Remove --device argument and its value if present
+            FILTERED_ARGS=()
+            skip_next=false
+            for arg in "$@"; do
+                if $skip_next; then
+                    skip_next=false
+                    continue
+                fi
+                if [[ "$arg" == "--device" ]]; then
+                    skip_next=true
+                    continue
+                fi
+                if [[ "$arg" != "--install" ]]; then
+                    FILTERED_ARGS+=("$arg")
+                fi
+            done
+            
+            python src/main.py --config $CONFIG_FILE "${FILTERED_ARGS[@]}"
+            
+            # Clean up temp config
+            rm -f $CONFIG_FILE
         fi
         ;;
         
@@ -251,9 +368,37 @@ conda activate prithvi
 # Set Python path to include the project
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
+# Create a temporary config file with CUDA settings
+CONFIG_FILE="src/config/config_cluster.yaml"
+cp src/config/config.yaml $CONFIG_FILE
+
+# Update config for GPU
+python - <<EOF
+import yaml
+
+# Load the config
+with open('$CONFIG_FILE', 'r') as f:
+    config = yaml.safe_load(f)
+
+# Update for GPU
+config['model']['device'] = 'cuda'
+config['hardware']['accelerator'] = 'gpu'
+config['hardware']['devices'] = 1
+config['hardware']['num_workers'] = 4
+config['training']['precision'] = 16  # Use mixed precision
+config['training']['batch_size'] = 4  # Increase batch size for GPU
+
+# Save the updated config
+with open('$CONFIG_FILE', 'w') as f:
+    yaml.dump(config, f)
+EOF
+
 # Run training with cluster mode enabled
 echo "Starting training in cluster mode..."
-python src/main.py --cluster
+python src/main.py --config $CONFIG_FILE --cluster
+
+# Clean up
+rm -f $CONFIG_FILE
 EOF
             
             # Submit the job
@@ -263,7 +408,53 @@ EOF
         else
             # If not in a SLURM environment, run with --cluster flag
             echo "Running in cluster mode (not using SLURM)..."
-            python src/main.py --cluster "$@"
+            
+            # Create a temporary config file with device settings
+            CONFIG_FILE="src/config/config_cluster.yaml"
+            cp src/config/config.yaml $CONFIG_FILE
+            
+            # Update for GPU/cluster
+            python - <<EOF
+import yaml
+
+# Load the config
+with open('$CONFIG_FILE', 'r') as f:
+    config = yaml.safe_load(f)
+
+# Determine device type
+if '$DEVICE_TYPE' == 'cuda':
+    config['model']['device'] = 'cuda'
+    config['hardware']['accelerator'] = 'gpu'
+    config['training']['precision'] = 16  # Use mixed precision
+    config['training']['batch_size'] = 4  # Increase batch size
+else:
+    config['model']['device'] = '$DEVICE_TYPE'
+    config['hardware']['accelerator'] = '$DEVICE_TYPE' if '$DEVICE_TYPE' == 'mps' else 'cpu'
+
+# Save the updated config
+with open('$CONFIG_FILE', 'w') as f:
+    yaml.dump(config, f)
+EOF
+            
+            # Remove --device argument if present
+            FILTERED_ARGS=()
+            skip_next=false
+            for arg in "$@"; do
+                if $skip_next; then
+                    skip_next=false
+                    continue
+                fi
+                if [[ "$arg" == "--device" ]]; then
+                    skip_next=true
+                    continue
+                fi
+                FILTERED_ARGS+=("$arg")
+            done
+            
+            python src/main.py --config $CONFIG_FILE --cluster "${FILTERED_ARGS[@]}"
+            
+            # Clean up
+            rm -f $CONFIG_FILE
         fi
         ;;
         
