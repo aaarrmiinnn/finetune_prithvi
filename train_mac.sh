@@ -5,6 +5,8 @@
 export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
 export PYTHONUNBUFFERED=1
+# Add the current directory to Python path to fix module imports
+export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # Print system info
 echo "Starting training on Mac OS system..."
@@ -16,12 +18,8 @@ mkdir -p logs
 mkdir -p models/checkpoints
 
 # Run the training script with Mac-specific optimizations
-python src/train.py \
+python src/main.py \
   --config src/config/config.yaml \
-  --accelerator cpu \
-  --precision 32 \
-  --batch_size 1 \
-  --accumulate_grad_batches 4 \
-  --max_epochs 5
+  --mode train
 
 echo "Training completed!" 

@@ -4,6 +4,8 @@
 # Set environment variables for better GPU performance
 export CUDA_VISIBLE_DEVICES=0
 export PYTHONUNBUFFERED=1
+# Add the current directory to Python path to fix module imports
+export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # Print system info
 echo "Starting training on Linux system..."
@@ -16,13 +18,9 @@ mkdir -p logs
 mkdir -p models/checkpoints
 
 # Run the training script with GPU optimizations
-python src/train.py \
+python src/main.py \
   --config src/config/config.yaml \
-  --accelerator gpu \
-  --devices 1 \
-  --precision 16 \
-  --batch_size 4 \
-  --accumulate_grad_batches 2 \
-  --max_epochs 10
+  --mode train \
+  --cluster
 
 echo "Training completed!" 

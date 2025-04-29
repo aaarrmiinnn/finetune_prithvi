@@ -5,6 +5,7 @@ import sys
 import subprocess
 import logging
 import time
+import platform
 
 # Configure logging
 logging.basicConfig(
@@ -19,18 +20,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def run_training():
-    """Run the training script with NaN-resistant modifications."""
+    """Run the appropriate training script based on platform."""
     logger.info("Starting training with NaN-resistant modifications")
     
-    # Ensure the logs directory exists
+    # Ensure the logs and checkpoints directories exist
     os.makedirs("logs", exist_ok=True)
+    os.makedirs("models/checkpoints", exist_ok=True)
     
     # Record the start time
     start_time = time.time()
     
+    # Determine platform and select the appropriate script
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        script_path = "./train_mac.sh"
+        logger.info("Detected macOS, using train_mac.sh")
+    else:  # Linux or other
+        script_path = "./train_linux.sh"
+        logger.info(f"Detected {system}, using train_linux.sh")
+    
+    # Make sure the script is executable
+    os.chmod(script_path, 0o755)
+    
     # Run the training script
     try:
-        cmd = ["python", "src/scripts/train.py", "--config", "src/config/config.yaml"]
+        # Set environment variables including PYTHONPATH
+        env = os.environ.copy()
+        env["PYTHONPATH"] = f"{env.get('PYTHONPATH', '')}:{os.getcwd()}"
+        logger.info(f"Setting PYTHONPATH to include current directory: {env['PYTHONPATH']}")
+        
+        cmd = [script_path]
         logger.info(f"Running command: {' '.join(cmd)}")
         
         # Run the process and stream output to the console
@@ -38,7 +57,8 @@ def run_training():
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            universal_newlines=True
+            universal_newlines=True,
+            env=env  # Pass the updated environment variables
         )
         
         # Stream the output
