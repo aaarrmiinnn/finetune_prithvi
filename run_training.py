@@ -7,6 +7,7 @@ import logging
 import time
 import platform
 import shutil
+import tempfile
 
 # Configure logging
 logging.basicConfig(
@@ -83,6 +84,21 @@ def run_training():
             if "find_unused_parameters" in line and "unexpected keyword argument" in line:
                 logger.error("PyTorch Lightning version incompatibility detected: 'find_unused_parameters' error")
                 logger.info("Please update the config.yaml file to remove this parameter or upgrade PyTorch Lightning")
+                
+            # Check for device mismatch issues
+            if "Expected all tensors to be on the same device" in line:
+                logger.error("Device mismatch detected: tensors are on different devices")
+                logger.info("This often happens when model device doesn't match the accelerator setting")
+                logger.info("Stopping training to avoid further errors")
+                
+                # Try to kill the process to prevent further errors
+                process.terminate()
+                
+                # Create a fixed config file that ensures device consistency
+                fix_device_mismatch()
+                
+                logger.info("Created a fixed config file. Please try running again with: python run_training.py")
+                break
         
         # Wait for the process to complete
         return_code = process.wait()
@@ -101,6 +117,65 @@ def run_training():
     minutes, seconds = divmod(remainder, 60)
     
     logger.info(f"Total training time: {int(hours)}h {int(minutes)}m {int(seconds)}s")
+
+def fix_device_mismatch():
+    """Create a fixed config file that ensures device consistency."""
+    logger.info("Creating a fixed config file to ensure device consistency")
+    
+    # Create a backup of the original config
+    config_path = "src/config/config.yaml"
+    backup_path = "src/config/config.yaml.bak"
+    fixed_path = "src/config/config_fixed.yaml"
+    
+    # Create backup if it doesn't exist
+    if not os.path.exists(backup_path):
+        shutil.copy(config_path, backup_path)
+        logger.info(f"Created backup of original config at {backup_path}")
+    
+    # Read the config file
+    with open(config_path, 'r') as f:
+        lines = f.readlines()
+    
+    # Flag to track if we're in the model section
+    in_model_section = False
+    
+    # Create fixed config
+    with open(fixed_path, 'w') as f:
+        for line in lines:
+            # Check if we're entering the model section
+            if line.strip() == "# Model Configuration":
+                in_model_section = True
+            elif line.strip().startswith("# ") and "Configuration" in line.strip():
+                in_model_section = False
+                
+            # Find the hardware accelerator line
+            if "accelerator:" in line and not line.strip().startswith("#"):
+                accelerator = line.split('"')[1] if '"' in line else line.split("'")[1] if "'" in line else None
+                
+                # Force the line to be consistent
+                if accelerator == "gpu":
+                    f.write('  accelerator: "gpu"\n')
+                    using_gpu = True
+                else:
+                    f.write('  accelerator: "cpu"\n')
+                    using_gpu = False
+                continue
+                
+            # Fix model device setting if we're in the model section
+            if in_model_section and "device:" in line and not line.strip().startswith("#"):
+                # Set device based on accelerator
+                if 'using_gpu' in locals() and using_gpu:
+                    f.write('  device: "cuda"\n')
+                else:
+                    f.write('  device: "cpu"\n')
+                continue
+                
+            # Write the original line
+            f.write(line)
+    
+    logger.info(f"Created fixed config file at {fixed_path}")
+    logger.info(f"Please use this config file for your next training run")
+    logger.info(f"Example: python src/main.py --config {fixed_path} --mode train")
 
 if __name__ == "__main__":
     run_training() 
