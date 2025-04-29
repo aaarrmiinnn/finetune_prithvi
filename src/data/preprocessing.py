@@ -12,228 +12,242 @@ import tempfile
 from pathlib import Path
 
 
-def load_merra2_data(file_path: str, variables: List[str]) -> xr.Dataset:
-    """Load MERRA-2 NetCDF4 data.
+def load_merra2_data(
+    file_path: Union[str, Path],
+    variables: List[str],
+    decode_times: bool = False
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load MERRA-2 data from NetCDF file.
     
     Args:
-        file_path: Path to MERRA-2 NetCDF4 file.
-        variables: List of variables to extract.
+        file_path: Path to NetCDF file
+        variables: List of variables to load
+        decode_times: Whether to decode times in xarray
         
     Returns:
-        xarray Dataset containing the requested variables.
+        Tuple of (data_array, latitudes, longitudes)
+        - data_array: Array of shape (num_vars, height, width)
+        - latitudes: Array of latitude values
+        - longitudes: Array of longitude values
     """
     try:
-        ds = xr.open_dataset(file_path)
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"MERRA-2 file not found: {file_path}")
         
-        # Check if all variables exist in the dataset
-        missing_vars = [var for var in variables if var not in ds.data_vars]
+        # Load dataset
+        ds = xr.open_dataset(file_path, decode_times=decode_times)
+        
+        # Check variables
+        missing_vars = [var for var in variables if var not in ds.variables]
         if missing_vars:
-            raise ValueError(f"Variables {missing_vars} not found in MERRA-2 file.")
+            raise ValueError(f"Variables not found in dataset: {missing_vars}")
         
-        # Select only the requested variables
-        ds = ds[variables]
+        # Get coordinates
+        lats = ds['lat'].values
+        lons = ds['lon'].values
         
-        # Convert temperature variables from Kelvin to Celsius
-        temp_vars = ['T2MMAX', 'T2MMEAN', 'T2MMIN']
-        for var in temp_vars:
-            if var in ds:
-                ds[var] = ds[var] - 273.15
-                ds[var].attrs['units'] = 'degC'
+        # Ensure longitudes are in -180 to 180 range
+        lons = np.where(lons > 180, lons - 360, lons)
         
-        return ds
+        # Load and stack variables
+        data = []
+        for var in variables:
+            var_data = ds[var].values
+            
+            # Handle temperature variables (convert from K to C)
+            if var in ['T2MMAX', 'T2MMEAN', 'T2MMIN']:
+                var_data = var_data - 273.15
+            
+            # Ensure 3D shape (time, lat, lon)
+            if var_data.ndim == 2:
+                var_data = var_data[np.newaxis, ...]
+            
+            data.append(var_data[0])  # Take first time step
+        
+        return np.stack(data), lats, lons
+    
     except Exception as e:
         raise RuntimeError(f"Error loading MERRA-2 data: {str(e)}")
+    
+    finally:
+        if 'ds' in locals():
+            ds.close()
 
 
-def load_prism_data(prism_dir: str, date: str, variables: List[str]) -> Dict[str, xr.DataArray]:
+def load_prism_data(
+    prism_dir: Union[str, Path],
+    date: str,
+    variables: List[str]
+) -> Tuple[Dict[str, np.ndarray], rasterio.Affine]:
     """Load PRISM data from zip files.
     
     Args:
-        prism_dir: Directory containing PRISM files.
-        date: Date string in format YYYYMMDD.
-        variables: List of PRISM variables to load (e.g., ['tdmean', 'ppt']).
+        prism_dir: Directory containing PRISM data
+        date: Date in YYYYMMDD format
+        variables: List of variables to load
         
     Returns:
-        Dictionary mapping variable names to xarray DataArrays.
+        Tuple of (data_dict, transform)
+        - data_dict: Dictionary mapping variable names to arrays
+        - transform: Affine transform for the PRISM grid
     """
-    result = {}
-    
-    for var in variables:
-        # Find the zip file for this variable and date
-        zip_pattern = os.path.join(prism_dir, f"prism_{var}_us_25m_{date}.zip")
-        zip_files = glob.glob(zip_pattern)
+    try:
+        prism_dir = Path(prism_dir)
+        if not prism_dir.exists():
+            raise FileNotFoundError(f"PRISM directory not found: {prism_dir}")
         
-        if not zip_files:
-            raise FileNotFoundError(f"No PRISM file found for variable {var} and date {date}")
+        data = {}
+        transform = None
         
-        zip_file = zip_files[0]
-        
-        # Extract and load the data files
         with tempfile.TemporaryDirectory() as temp_dir:
-            with zipfile.ZipFile(zip_file, 'r') as z:
-                # Extract all files
-                z.extractall(temp_dir)
+            for var in variables:
+                # Find matching file
+                pattern = f"prism_{var}_us_25m_{date}.zip"
+                var_files = list(prism_dir.glob(pattern))
                 
-                # Base name for all files
-                base_name = f"prism_{var}_us_25m_{date}"
+                if not var_files:
+                    raise FileNotFoundError(f"PRISM file not found: {pattern}")
                 
-                # Load the GeoTIFF file with proper CRS
-                tif_file = os.path.join(temp_dir, f"{base_name}.tif")
-                if not os.path.exists(tif_file):
-                    raise FileNotFoundError(f"No .tif file found in {zip_file}")
+                var_file = var_files[0]
                 
-                # Read with rioxarray, explicitly setting CRS to NAD83
-                da = rioxarray.open_rasterio(tif_file)
-                da.rio.write_crs("EPSG:4269", inplace=True)  # NAD83
-                
-                # Standardize the dimensions
-                da = da.squeeze(drop=True)  # Remove single-dimension axes
-                
-                # Set variable name
-                da.name = var
-                
-                # Read metadata from XML for proper attributes
-                xml_file = os.path.join(temp_dir, f"{base_name}.tif.aux.xml")
-                if os.path.exists(xml_file):
-                    try:
-                        import xml.etree.ElementTree as ET
-                        tree = ET.parse(xml_file)
-                        root = tree.getroot()
-                        stats = {
-                            elem.attrib['key']: float(elem.text)
-                            for elem in root.findall(".//MDI")
-                            if elem.attrib['key'].startswith('STATISTICS_')
-                        }
+                # Extract zip file
+                with zipfile.ZipFile(var_file, 'r') as zip_ref:
+                    # Get the GeoTIFF file
+                    tif_files = [f for f in zip_ref.namelist() if f.endswith('.tif') and not f.endswith('.aux.xml')]
+                    if not tif_files:
+                        raise FileNotFoundError(f"No GeoTIFF file found in {var_file}")
+                    
+                    # Extract the GeoTIFF file
+                    tif_file = tif_files[0]
+                    zip_ref.extract(tif_file, temp_dir)
+                    
+                    # Load data using rasterio
+                    tif_path = os.path.join(temp_dir, tif_file)
+                    with rasterio.open(tif_path) as src:
+                        var_data = src.read(1)  # Read first band
                         
-                        # Set attributes based on variable type
-                        if var == 'tdmean':
-                            da.attrs.update({
-                                'units': 'degC',
-                                'long_name': 'Mean Temperature',
-                                'grid_mapping': 'NAD83',
-                                'valid_range': [stats.get('STATISTICS_MINIMUM', -100.0),
-                                              stats.get('STATISTICS_MAXIMUM', 100.0)],
-                                '_FillValue': -9999.0
-                            })
-                        elif var == 'ppt':
-                            da.attrs.update({
-                                'units': 'mm',
-                                'long_name': 'Precipitation',
-                                'grid_mapping': 'NAD83',
-                                'valid_range': [0.0, stats.get('STATISTICS_MAXIMUM', 1000.0)],
-                                '_FillValue': -9999.0
-                            })
+                        # Store transform from first variable
+                        if transform is None:
+                            transform = src.transform
                         
-                        # Add statistics to attributes
-                        da.attrs.update({
-                            'min_value': stats.get('STATISTICS_MINIMUM'),
-                            'max_value': stats.get('STATISTICS_MAXIMUM'),
-                            'mean_value': stats.get('STATISTICS_MEAN'),
-                            'std_value': stats.get('STATISTICS_STDDEV')
-                        })
-                    except Exception as e:
-                        print(f"Warning: Could not parse XML stats: {e}")
-                
-                # Mask no-data values
-                da = da.where(da > da.attrs['_FillValue'])
-                
-                result[var] = da
+                        # Apply variable-specific scaling
+                        if var == 'tdmean':  # Temperature
+                            var_data = var_data * 0.1  # Scale factor for temperature
+                        elif var == 'ppt':  # Precipitation
+                            var_data = var_data * 1.0  # Scale factor for precipitation
+                        
+                        # Mask no-data values
+                        if src.nodata is not None:
+                            var_data = np.ma.masked_array(var_data, var_data == src.nodata)
+                        
+                        # Convert to regular numpy array, filling masked values with NaN
+                        if isinstance(var_data, np.ma.MaskedArray):
+                            var_data = var_data.filled(np.nan)
+                        
+                        data[var] = var_data
+        
+        if transform is None:
+            raise RuntimeError("Failed to get transform from PRISM data")
+        
+        return data, transform
     
-    return result
+    except Exception as e:
+        raise RuntimeError(f"Error loading PRISM data: {str(e)}")
 
 
-def load_dem_data(dem_path: str) -> xr.DataArray:
+def load_dem_data(dem_path: Union[str, Path]) -> np.ndarray:
     """Load Digital Elevation Model data.
     
     Args:
-        dem_path: Path to DEM file.
+        dem_path: Path to DEM file
         
     Returns:
-        xarray DataArray containing the DEM data.
+        Array of shape (height, width)
     """
     try:
-        # Check file extension
-        if dem_path.endswith('.bil'):
-            # GDAL/rasterio can read .bil files
-            dem = rioxarray.open_rasterio(dem_path)
-            dem = dem.squeeze(drop=True)  # Remove single-dimension axes
-            return dem
-        else:
-            raise ValueError(f"Unsupported DEM file format: {dem_path}")
+        dem_path = Path(dem_path)
+        if not dem_path.exists():
+            raise FileNotFoundError(f"DEM file not found: {dem_path}")
+        
+        # Load data using rasterio
+        with rasterio.open(dem_path) as src:
+            dem_data = src.read(1)  # Read first band
+            
+            # Mask no-data values
+            if src.nodata is not None:
+                dem_data = np.ma.masked_equal(dem_data, src.nodata)
+            
+            return dem_data
+    
     except Exception as e:
         raise RuntimeError(f"Error loading DEM data: {str(e)}")
 
 
-def reproject_merra2_to_prism(merra2_ds: xr.Dataset, prism_da: xr.DataArray) -> xr.Dataset:
-    """Reproject MERRA-2 data to match PRISM grid.
+def reproject_merra2_to_prism(
+    merra2_data: np.ndarray,
+    merra2_lats: np.ndarray,
+    merra2_lons: np.ndarray,
+    prism_data: np.ndarray,
+    prism_transform: np.ndarray,
+    method: str = 'bilinear'
+) -> np.ndarray:
+    """Reproject MERRA-2 data to PRISM grid.
     
     Args:
-        merra2_ds: MERRA-2 dataset with variables to reproject.
-        prism_da: PRISM data array to use as reference for target grid.
+        merra2_data: MERRA-2 data array of shape (vars, lat, lon)
+        merra2_lats: MERRA-2 latitude array
+        merra2_lons: MERRA-2 longitude array
+        prism_data: PRISM data array of shape (height, width)
+        prism_transform: PRISM affine transform
+        method: Interpolation method ('bilinear' or 'nearest')
         
     Returns:
-        MERRA-2 dataset reprojected to PRISM grid.
+        Reprojected MERRA-2 data on PRISM grid
     """
-    # Create a copy to avoid modifying the input
-    merra2_ds = merra2_ds.copy()
-    
-    # Check and fix latitude orientation
-    # MERRA-2 should have latitudes from south to north
-    for var in merra2_ds.data_vars:
-        if 'lat' in merra2_ds[var].coords:
-            lats = merra2_ds[var].lat.values
-            if lats[0] > lats[-1]:  # If latitudes are north to south
-                print("Flipping MERRA-2 data to ensure south-to-north orientation")
-                merra2_ds[var] = merra2_ds[var].reindex(lat=list(reversed(lats)))
-    
-    # Ensure MERRA-2 has proper CRS (WGS84)
-    for var in merra2_ds.data_vars:
-        if not hasattr(merra2_ds[var], 'rio'):
-            merra2_ds[var] = merra2_ds[var].rio.set_spatial_dims(x_dim='lon', y_dim='lat')
-        merra2_ds[var] = merra2_ds[var].rio.write_crs("EPSG:4326")  # WGS84
-    
-    # Create output dataset
-    reprojected_ds = xr.Dataset()
-    
-    # Reproject each variable
-    for var in merra2_ds.data_vars:
-        # Get the MERRA-2 data array
-        da = merra2_ds[var]
+    try:
+        # Check input shapes
+        if merra2_data.ndim != 3:
+            raise ValueError("MERRA-2 data must be 3D (vars, lat, lon)")
+        if prism_data.ndim != 2:
+            raise ValueError("PRISM data must be 2D (height, width)")
         
-        # Convert longitude from 0-360 to -180-180 if needed
-        if (da.lon > 180).any():
-            da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
-            da = da.roll(lon=(da.dims['lon'] // 2), roll_coords=True)
-        
-        # Reproject to match PRISM grid using bilinear interpolation
-        reprojected = da.rio.reproject_match(
-            prism_da,
-            resampling=rasterio.enums.Resampling.bilinear
+        # Create source dataset
+        ds = xr.Dataset(
+            data_vars={
+                'data': (['var', 'y', 'x'], merra2_data)
+            },
+            coords={
+                'y': merra2_lats,
+                'x': merra2_lons
+            }
         )
         
-        # Fill NaN values with nearest valid data
-        if np.isnan(reprojected).any():
-            reprojected = reprojected.rio.reproject_match(
-                prism_da,
-                resampling=rasterio.enums.Resampling.nearest
-            ).where(~np.isnan(reprojected), reprojected)
+        # Set spatial dimensions and CRS
+        ds = ds.rio.set_spatial_dims(x_dim='x', y_dim='y')
+        ds = ds.rio.write_crs("EPSG:4326")  # WGS84
         
-        # Add to output dataset
-        reprojected_ds[var] = reprojected
+        # Create target grid
+        target_height, target_width = prism_data.shape
         
-        # Copy attributes
-        reprojected_ds[var].attrs = da.attrs.copy()
-        reprojected_ds[var].attrs.update({
-            'grid_mapping': 'NAD83',  # Target CRS
-            'resampling_method': 'bilinear',
-            'original_grid': 'MERRA-2'
-        })
+        # Reproject
+        ds_proj = ds.rio.reproject(
+            dst_crs="EPSG:4269",  # NAD83
+            shape=(target_height, target_width),
+            transform=prism_transform,
+            resampling=getattr(rasterio.enums.Resampling, method)
+        )
+        
+        return ds_proj['data'].values
     
-    return reprojected_ds
+    except Exception as e:
+        raise RuntimeError(f"Error reprojecting data: {str(e)}")
 
 
-def normalize_data(data: Union[xr.Dataset, xr.DataArray], 
-                  stats: Optional[Dict[str, Dict[str, float]]] = None) -> Tuple[Union[xr.Dataset, xr.DataArray], Dict[str, Dict[str, float]]]:
+def normalize_data(
+    data: Union[xr.Dataset, xr.DataArray, np.ndarray], 
+    stats: Optional[Dict[str, Dict[str, float]]] = None
+) -> Tuple[Union[xr.Dataset, xr.DataArray, np.ndarray], Dict[str, Dict[str, float]]]:
     """Normalize data to zero mean and unit variance.
     
     If stats are provided, use them for normalization.
@@ -259,9 +273,16 @@ def normalize_data(data: Union[xr.Dataset, xr.DataArray],
                     std = 1.0  # Prevent division by zero
                 stats[var] = {'mean': mean, 'std': std}
                 data[var] = (data[var] - mean) / std
-        else:  # DataArray
+        elif isinstance(data, xr.DataArray):
             mean = float(data.mean().values)
             std = float(data.std().values)
+            if std == 0:
+                std = 1.0
+            stats['data'] = {'mean': mean, 'std': std}
+            data = (data - mean) / std
+        else:  # numpy array
+            mean = float(np.nanmean(data))
+            std = float(np.nanstd(data))
             if std == 0:
                 std = 1.0
             stats['data'] = {'mean': mean, 'std': std}
@@ -274,7 +295,12 @@ def normalize_data(data: Union[xr.Dataset, xr.DataArray],
                     mean = stats[var]['mean']
                     std = stats[var]['std']
                     data[var] = (data[var] - mean) / std
-        else:  # DataArray
+        elif isinstance(data, xr.DataArray):
+            if 'data' in stats:
+                mean = stats['data']['mean']
+                std = stats['data']['std']
+                data = (data - mean) / std
+        else:  # numpy array
             if 'data' in stats:
                 mean = stats['data']['mean']
                 std = stats['data']['std']
@@ -283,9 +309,11 @@ def normalize_data(data: Union[xr.Dataset, xr.DataArray],
     return data, stats
 
 
-def extract_patches(data: Union[xr.Dataset, xr.DataArray], 
-                   patch_size: int, 
-                   stride: Optional[int] = None) -> List[Union[xr.Dataset, xr.DataArray]]:
+def extract_patches(
+    data: Union[xr.Dataset, xr.DataArray, np.ndarray], 
+    patch_size: int, 
+    stride: Optional[int] = None
+) -> List[Union[xr.Dataset, xr.DataArray, np.ndarray]]:
     """Extract spatial patches from the data.
     
     Args:
@@ -301,42 +329,63 @@ def extract_patches(data: Union[xr.Dataset, xr.DataArray],
     
     patches = []
     
-    # Identify spatial dimensions based on data type
-    if isinstance(data, xr.Dataset):
-        # Get the first variable to identify dimensions
-        first_var = list(data.data_vars)[0]
-        dims = data[first_var].dims
-    else:  # DataArray
-        dims = data.dims
-    
-    # Find spatial dimensions (assuming they are 'y' and 'x' or similar)
-    spatial_dims = [dim for dim in dims if dim.lower() in ['y', 'x', 'lat', 'lon', 'latitude', 'longitude']]
-    if len(spatial_dims) != 2:
-        raise ValueError(f"Could not identify spatial dimensions in {dims}")
-    
-    y_dim, x_dim = spatial_dims
-    
-    # Get dimension sizes
-    y_size = data.sizes[y_dim]
-    x_size = data.sizes[x_dim]
-    
-    # Extract patches
-    for y in range(0, y_size - patch_size + 1, stride):
-        for x in range(0, x_size - patch_size + 1, stride):
-            # Select the patch
-            patch = data.isel({y_dim: slice(y, y + patch_size), x_dim: slice(x, x + patch_size)})
-            patches.append(patch)
+    if isinstance(data, (xr.Dataset, xr.DataArray)):
+        # Identify spatial dimensions based on data type
+        if isinstance(data, xr.Dataset):
+            # Get the first variable to identify dimensions
+            first_var = list(data.data_vars)[0]
+            dims = data[first_var].dims
+        else:  # DataArray
+            dims = data.dims
+        
+        # Find spatial dimensions (assuming they are 'y' and 'x' or similar)
+        spatial_dims = [dim for dim in dims if dim.lower() in ['y', 'x', 'lat', 'lon', 'latitude', 'longitude']]
+        if len(spatial_dims) != 2:
+            raise ValueError(f"Could not identify spatial dimensions in {dims}")
+        
+        y_dim, x_dim = spatial_dims
+        
+        # Get dimension sizes
+        y_size = data.sizes[y_dim]
+        x_size = data.sizes[x_dim]
+        
+        # Extract patches
+        for y in range(0, y_size - patch_size + 1, stride):
+            for x in range(0, x_size - patch_size + 1, stride):
+                # Select the patch
+                patch = data.isel({y_dim: slice(y, y + patch_size), x_dim: slice(x, x + patch_size)})
+                patches.append(patch)
+    else:  # numpy array
+        # For numpy arrays, assume last two dimensions are spatial
+        if data.ndim < 2:
+            raise ValueError("Data must have at least 2 dimensions")
+        
+        # Get spatial dimensions
+        y_size = data.shape[-2]
+        x_size = data.shape[-1]
+        
+        # Extract patches
+        for y in range(0, y_size - patch_size + 1, stride):
+            for x in range(0, x_size - patch_size + 1, stride):
+                # Select the patch
+                if data.ndim == 2:
+                    patch = data[y:y + patch_size, x:x + patch_size]
+                else:
+                    patch = data[..., y:y + patch_size, x:x + patch_size]
+                patches.append(patch)
     
     return patches
 
 
-def prepare_merra2_prism_pair(merra2_file: str, 
-                             prism_dir: str, 
-                             date: str,
-                             merra2_vars: List[str],
-                             prism_vars: List[str],
-                             dem_path: Optional[str] = None,
-                             normalize: bool = False) -> Dict[str, Union[xr.Dataset, xr.DataArray, Dict]]:
+def prepare_merra2_prism_pair(
+    merra2_file: str, 
+    prism_dir: str, 
+    date: str,
+    merra2_vars: List[str],
+    prism_vars: List[str],
+    dem_path: Optional[str] = None,
+    normalize: bool = False
+) -> Dict[str, Union[xr.Dataset, xr.DataArray, Dict]]:
     """Prepare a matched pair of MERRA-2 and PRISM data for the same date.
     
     Args:
@@ -352,10 +401,23 @@ def prepare_merra2_prism_pair(merra2_file: str,
         Dictionary with keys 'merra2', 'prism', and optionally 'dem' and 'stats'.
     """
     # Load MERRA-2 data
-    merra2_data = load_merra2_data(merra2_file, merra2_vars)
+    merra2_data, merra2_lats, merra2_lons = load_merra2_data(merra2_file, merra2_vars)
     
     # Load PRISM data
-    prism_data = load_prism_data(prism_dir, date, prism_vars)
+    prism_data, prism_transform = load_prism_data(prism_dir, date, prism_vars)
+    
+    # Convert PRISM data to xarray DataArrays
+    prism_arrays = {}
+    for var, data in prism_data.items():
+        prism_arrays[var] = xr.DataArray(
+            data,
+            dims=['y', 'x'],
+            coords={
+                'y': np.arange(data.shape[0]),
+                'x': np.arange(data.shape[1])
+            },
+            name=var
+        )
     
     # Load DEM if requested
     dem_data = None
@@ -363,13 +425,20 @@ def prepare_merra2_prism_pair(merra2_file: str,
         dem_data = load_dem_data(dem_path)
     
     # Reproject MERRA-2 data to match PRISM grid
-    # Use the first PRISM variable as reference for the target grid
-    first_prism_var = next(iter(prism_data.values()))
-    merra2_data = reproject_merra2_to_prism(merra2_data, first_prism_var)
+    # Use the first PRISM variable as reference
+    first_var = next(iter(prism_data))
+    first_prism_data = prism_data[first_var]
+    merra2_data = reproject_merra2_to_prism(
+        merra2_data,
+        merra2_lats,
+        merra2_lons,
+        first_prism_data,
+        prism_transform
+    )
     
     result = {
         'merra2': merra2_data,
-        'prism': prism_data,
+        'prism': prism_arrays,
     }
     
     if dem_data is not None:
@@ -387,7 +456,7 @@ def prepare_merra2_prism_pair(merra2_file: str,
         # Normalize PRISM
         prism_norm = {}
         prism_stats = {}
-        for var, data in prism_data.items():
+        for var, data in prism_arrays.items():
             norm_data, var_stats = normalize_data(data)
             prism_norm[var] = norm_data
             prism_stats[var] = var_stats

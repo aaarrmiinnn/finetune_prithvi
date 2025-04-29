@@ -1,101 +1,180 @@
-# MERRA-2 to PRISM Downscaling Pipeline
+# Prithvi Downscaler
 
-This project implements a PyTorch Lightning pipeline to downscale MERRA-2 climate data to PRISM's higher resolution using the Prithvi WxC foundation model. The pipeline transforms coarse atmospheric variables into high-resolution outputs matching observed PRISM climatology.
+A deep learning model for downscaling MERRA2 climate data to PRISM resolution using IBM's Prithvi-WxC-1.0-2300M model.
 
-## Project Structure
+## Overview
 
-- `data/`: Contains input and auxiliary data
-  - `merra2/`: MERRA-2 NetCDF4 files (51x94 grid)
-  - `prism/`: PRISM climate data files (621x1405 grid, 4km resolution)
-  - `dem/`: Digital Elevation Model data (matching PRISM resolution)
+This project implements a transformer-based downscaling approach to increase the spatial resolution of MERRA2 global climate data to match PRISM's regional 4km resolution. The model leverages the pretrained Prithvi-WxC model from IBM and NASA, incorporating topographical information through Digital Elevation Model (DEM) data.
 
-- `src/`: Source code
-  - `data/`: Data preprocessing and dataset implementations
-    - `preprocessing.py`: Data loading and transformation functions
-    - `dataset.py`: PyTorch dataset implementations
-  - `models/`: Model architecture definitions
-  - `trainers/`: PyTorch Lightning trainer modules
-  - `utils/`: Utility functions and helper scripts
-  - `config/`: Configuration files
-  - `scripts/`: Analysis and visualization scripts
-    - `explore_data.py`: Data visualization and analysis tool
+## Features
 
-## Data Processing
+- Deep learning-based downscaling of climate variables (temperature and precipitation)
+- Integration of terrain information through DEM data
+- Configurable model architecture and training parameters
+- Mixed precision training for efficiency
+- Optimized for Mac M1/M2 using MPS backend
+- Comprehensive logging with TensorBoard and Weights & Biases
 
-### Input Data
-- **MERRA-2 Variables:**
-  - T2MMAX: Maximum 2-meter temperature (K → °C)
-  - T2MMEAN: Mean 2-meter temperature (K → °C)
-  - T2MMIN: Minimum 2-meter temperature (K → °C)
-  - TPRECMAX: Maximum precipitation rate
-  - Format: NetCDF4
-  - Coordinate System: WGS84 (EPSG:4326)
+## Requirements
 
-- **PRISM Variables:**
-  - tdmean: Mean temperature (°C)
-  - ppt: Precipitation (mm)
-  - Format: GeoTIFF in zip archives
-  - Coordinate System: NAD83 (EPSG:4269)
+- Python 3.8
+- PyTorch 2.0+
+- PyTorch Lightning
+- Hugging Face Transformers
+- NetCDF4
+- GDAL
+- NumPy
+- Pandas
+- Weights & Biases (optional)
 
-- **Auxiliary Data:**
-  - Digital Elevation Model (DEM)
-  - Format: BIL (Band Interleaved by Line)
-  - Resolution: 4km (matching PRISM)
+## Installation
 
-### Data Pipeline Features
-- Automatic unit conversion (K → °C for MERRA-2)
-- Coordinate system alignment
-- Resolution matching via bilinear interpolation
-- Quality control and validation
-- Missing value handling
-- Metadata preservation
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd finetune_prithvi
+   ```
 
-### Example Visualization
+2. Create a conda environment:
+   ```bash
+   conda create -n prithvi python=3.8
+   conda activate prithvi
+   ```
 
-Below is an example visualization comparing MERRA-2 and PRISM data for March 2, 2025:
+3. Install GDAL using conda (recommended) before other dependencies:
+   ```bash
+   conda install -c conda-forge gdal
+   ```
 
-![Data Comparison](docs/images/data_comparison.png)
-
-The visualization shows:
-- Left column: MERRA-2 temperature data (T2MMAX and T2MMEAN) at coarse resolution
-- Right column: PRISM temperature (tdmean) and precipitation (ppt) at 4km resolution
-- Temperature range: -10°C to 30°C (blue to red)
-- Clear spatial patterns including:
-  - North-south temperature gradient
-  - Topographic effects
-  - Coastal features
-
-## Setup
-
-1. Install dependencies:
+4. Install the remaining dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-2. Prepare data files:
-   - Place MERRA-2 NetCDF4 files in `data/merra2/`
-   - Place PRISM zip files in `data/prism/`
-   - Place DEM file in `data/dem/`
+## Data Preparation
 
-3. Explore data:
-   ```bash
-   bash explore_data.sh
-   ```
+### Data Directory Structure
 
-4. Run training:
-   ```bash
-   python src/main.py
-   ```
+The project expects the following data directory structure:
+```
+data/
+├── merra2/           # MERRA2 NetCDF4 files
+├── prism/            # PRISM data in zip or extracted format
+└── dem/              # Digital Elevation Model data (BIL format)
+```
 
-## Visualization
+### MERRA2 Data
 
-The project includes visualization tools for data exploration and validation:
-- Side-by-side comparison of MERRA-2 and PRISM data
-- Temperature range visualization (-10°C to 30°C)
-- Precipitation visualization with appropriate color scales
-- DEM overlay capabilities
-- Statistical analysis tools
+1. Download MERRA2 data from NASA GES DISC in NetCDF4 format
+2. Place the files in the `data/merra2` directory
+3. Files should contain variables: T2MMAX, T2MMEAN, T2MMIN, TPRECMAX
 
-## Model
+### PRISM Data
 
-The model uses Prithvi WxC as a foundation model for downscaling, with additional components to handle the specific task of climate downscaling. 
+1. Download PRISM data from PRISM Climate Group
+2. Place the zip or extracted files in the `data/prism` directory
+3. Files should contain variables: tdmean (temperature), ppt (precipitation)
+
+### DEM Data
+
+1. Download the Digital Elevation Model data in BIL format
+2. Place the file in the `data/dem` directory
+3. The default expected filename is `PRISM_us_dem_4km_bil.bil`
+
+## Configuration
+
+The model and training parameters are configured through YAML files in `src/config/`:
+
+```bash
+# Edit the configuration file as needed
+nano src/config/config.yaml
+```
+
+Key configuration sections include:
+- Data configuration (paths, variables, patch size)
+- Model configuration (hidden dimension, pretrained weights)
+- Training configuration (batch size, learning rate, optimizer)
+- Hardware configuration (accelerator, devices)
+
+### Memory Optimization
+
+For Mac M1/M2 users, the configuration is already optimized with:
+- Reduced hidden dimension (128)
+- Smaller batch size (1)
+- MPS backend for GPU acceleration
+- Smaller patch size (32)
+
+For systems with more memory, you can increase these values for better performance.
+
+## Training
+
+To train the model:
+
+```bash
+# For local training
+./train.sh
+
+# For cluster training with SLURM
+./cluster_train.sh
+```
+
+Or run Python directly:
+
+```bash
+python src/main.py
+```
+
+This will:
+1. Load and preprocess the data
+2. Create and initialize the model
+3. Train the model with the configured parameters
+4. Save checkpoints and logs
+
+## Monitoring
+
+Training progress can be monitored using:
+
+- TensorBoard:
+  ```bash
+  tensorboard --logdir logs
+  ```
+
+- Weights & Biases (if enabled):
+  Monitor at https://wandb.ai/YOUR_USERNAME/merra2-prism-downscaling
+
+## Model Outputs
+
+The trained model will produce:
+- Checkpoints in the `logs/` directory
+- Performance metrics (MAE, MSE, RMSE)
+- Visualization plots (if enabled)
+
+## Troubleshooting
+
+### Memory Issues
+
+If you encounter memory errors:
+1. Reduce batch size in config.yaml
+2. Decrease hidden_dim in config.yaml
+3. Reduce patch_size in config.yaml
+4. Use mixed precision training (set precision to 16)
+
+For MPS backend memory issues on Mac:
+```bash
+export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.7
+```
+
+### GDAL Installation Issues
+
+If GDAL installation fails:
+1. Install via conda first: `conda install -c conda-forge gdal`
+2. Then install other requirements: `pip install -r requirements.txt`
+
+## License
+
+[Specify your license here]
+
+## Acknowledgments
+
+- IBM and NASA for the Prithvi-WxC model
+- MERRA2 and PRISM for climate data 

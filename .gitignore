@@ -77,4 +77,66 @@ __pycache__/
 !data/dem/.gitkeep
 
 # Prithvi-WxC repository
-Prithvi-WxC/ 
+Prithvi-WxC/
+
+# Data directories
+data/
+cache/
+models/cache/
+
+# Training artifacts
+logs/
+wandb/
+lightning_logs/
+checkpoints/
+*.ckpt
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Testing
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.pytest_cache/
+
+# Miscellaneous
+temp/
+tmp/
+.env 

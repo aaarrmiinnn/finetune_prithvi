@@ -155,10 +155,10 @@ class MERRA2PRISMDataset(Dataset):
                 
                 # Create patch pairs
                 date_patches = []
-                for i in range(min(len(merra2_patches), min([len(prism_patches[var]) for var in prism_vars]))):
+                for i in range(min(len(merra2_patches), min([len(prism_patches[var]) for var in self.prism_vars]))):
                     patch_data = {
                         'merra2': merra2_patches[i],
-                        'prism': {var: prism_patches[var][i] for var in prism_vars},
+                        'prism': {var: prism_patches[var][i] for var in self.prism_vars},
                         'date': date
                     }
                     
@@ -212,6 +212,13 @@ class MERRA2PRISMDataset(Dataset):
                     tensors.append(tensor)
             
             return torch.cat(tensors, dim=0)
+        
+        elif isinstance(data, np.ndarray):
+            # Handle numpy arrays
+            tensor = torch.tensor(data, dtype=torch.float32)
+            if tensor.ndim == 2:
+                tensor = tensor.unsqueeze(0)  # Add channel dimension
+            return tensor
         
         else:
             raise ValueError(f"Unsupported data type: {type(data)}")

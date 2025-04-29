@@ -4,6 +4,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoConfig
 from typing import Dict, List, Tuple, Optional, Union, Any
+import os
+import pytorch_lightning as pl
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+from .prithvi_wxc import PrithviWxC, PrithviWxCConfig
 
 
 class UpsampleBlock(nn.Module):
@@ -121,141 +126,119 @@ class DemEncoder(nn.Module):
 
 
 class PrithviDownscaler(nn.Module):
-    """Downscaling model based on Prithvi WxC."""
+    """A downscaling model that uses PrithviWxC as a backbone.
+    
+    This model takes low-resolution climate data and produces high-resolution predictions
+    using a transformer-based architecture. It consists of three main components:
+    1. Input projection: Adapts input channels to the transformer's hidden dimension
+    2. Feature extraction: Uses PrithviWxC to extract features
+    3. Decoder: Converts features to the desired output resolution and channels
+    """
     
     def __init__(
         self,
-        prithvi_checkpoint: str = "ibm/prithvi-100m-wxc",
+        input_channels: int,
+        output_channels: int,
+        hidden_dim: int = 768,
+        prithvi_checkpoint: str = "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M",
+        cache_dir: str = "models/cache",
+        device: str = "cuda",
         use_pretrained: bool = True,
-        freeze_encoder: bool = False,
-        unfreeze_layers: List[str] = None,
-        input_channels: int = 4,  # Number of MERRA-2 variables
-        output_channels: int = 2,  # Number of PRISM variables
-        embedding_dim: int = 768,
-        upsampling_scales: List[int] = [2, 2],  # Total upsampling factor = product of scales
-        dropout: float = 0.1,
-        use_dem: bool = True
     ):
-        """Initialize the Prithvi downscaler.
+        """Initialize the PrithviDownscaler model.
         
         Args:
-            prithvi_checkpoint: Pretrained Prithvi checkpoint from HuggingFace.
-            use_pretrained: Whether to use pretrained weights.
-            freeze_encoder: Whether to freeze the Prithvi encoder.
-            unfreeze_layers: List of layer names to unfreeze if encoder is frozen.
-            input_channels: Number of input channels (MERRA-2 variables).
-            output_channels: Number of output channels (PRISM variables).
-            embedding_dim: Embedding dimension.
-            upsampling_scales: List of upsampling scales for each level.
-            dropout: Dropout rate.
-            use_dem: Whether to use DEM as auxiliary input.
+            input_channels: Number of input channels
+            output_channels: Number of output channels
+            hidden_dim: Hidden dimension size for transformer and conv layers
+            prithvi_checkpoint: Model name or path for PrithviWxC
+            cache_dir: Directory to cache downloaded models
+            device: Device to use (cuda or cpu)
+            use_pretrained: Whether to use pretrained weights
         """
         super().__init__()
         
-        self.use_pretrained = use_pretrained
-        self.freeze_encoder = freeze_encoder
-        self.use_dem = use_dem
-        
-        # Load Prithvi model
-        if use_pretrained:
-            self.config = AutoConfig.from_pretrained(prithvi_checkpoint)
-            self.prithvi = AutoModel.from_pretrained(prithvi_checkpoint)
-        else:
-            self.config = AutoConfig.from_pretrained(prithvi_checkpoint)
-            self.prithvi = AutoModel.from_config(self.config)
-        
-        # Freeze encoder if specified
-        if freeze_encoder:
-            for param in self.prithvi.parameters():
-                param.requires_grad = False
-            
-            # Unfreeze specific layers if requested
-            if unfreeze_layers:
-                for name, param in self.prithvi.named_parameters():
-                    if any(layer in name for layer in unfreeze_layers):
-                        param.requires_grad = True
-        
-        # Input adaptation layer to convert from input_channels to Prithvi's expected channels
-        # Prithvi typically expects 160 channels (80 variables x 2 timestamps)
-        self.input_adapter = nn.Conv2d(input_channels, 160, kernel_size=1)
-        
-        # DEM encoder
-        if use_dem:
-            self.dem_encoder = DemEncoder(in_channels=1, out_channels=embedding_dim // 2)
-            self.dem_projection = nn.Conv2d(embedding_dim // 2, embedding_dim, kernel_size=1)
-        
-        # Feature extraction from Prithvi's output
-        self.feature_extractor = nn.Sequential(
-            nn.Conv2d(embedding_dim, embedding_dim, kernel_size=3, padding=1),
-            nn.BatchNorm2d(embedding_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout)
+        # Initialize PrithviWxC backbone with the correct number of input channels
+        config = PrithviWxCConfig(
+            num_channels=input_channels,
+            hidden_size=hidden_dim,
+            patch_size=16,  # Fixed patch size for Prithvi
+        )
+        self.backbone = PrithviWxC(
+            config=config,
+            model_name=prithvi_checkpoint,
+            cache_dir=cache_dir,
+            device=device,
+            use_pretrained=use_pretrained,
         )
         
-        # Decoder with upsampling
-        decoder_layers = []
-        in_channels = embedding_dim
+        # Input projection layers
+        self.input_projection = nn.Sequential(
+            nn.Conv2d(input_channels, hidden_dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim // 2),
+            nn.ReLU(),
+            nn.Conv2d(hidden_dim // 2, input_channels, kernel_size=3, padding=1),  # Project back to input channels
+            nn.BatchNorm2d(input_channels),
+            nn.ReLU(),
+        )
         
-        for i, scale in enumerate(upsampling_scales):
-            out_channels = embedding_dim // (2 ** (i + 1)) if i < len(upsampling_scales) - 1 else output_channels
-            decoder_layers.append(
-                UpsampleBlock(
-                    in_channels=in_channels,
-                    out_channels=out_channels,
-                    scale_factor=scale,
-                    use_residual=True
-                )
-            )
-            in_channels = out_channels
+        # Feature extraction layers
+        self.feature_extraction = nn.Sequential(
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim),
+            nn.ReLU(),
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim),
+            nn.ReLU(),
+        )
         
-        self.decoder = nn.Sequential(*decoder_layers)
+        # Decoder layers with progressive upsampling
+        # Input: 64x64 -> Output: 256x256 (2 upsampling blocks)
+        self.decoder = nn.Sequential(
+            # 64x64 -> 128x128
+            UpsampleBlock(hidden_dim, hidden_dim // 2, scale_factor=2),
+            # 128x128 -> 256x256
+            UpsampleBlock(hidden_dim // 2, hidden_dim // 4, scale_factor=2),
+            # Final convolution to get desired number of channels
+            nn.Conv2d(hidden_dim // 4, output_channels, kernel_size=1),
+        )
     
-    def forward(
-        self, 
-        x: torch.Tensor, 
-        dem: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """Forward pass.
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the model.
         
         Args:
-            x: Input tensor of shape (B, C, H, W).
-            dem: DEM tensor of shape (B, 1, H*4, W*4).
+            x: Input tensor of shape (batch_size, channels, height, width)
             
         Returns:
-            Output tensor of shape (B, output_channels, H*4, W*4).
+            Output tensor of shape (batch_size, output_channels, height*4, width*4)
         """
-        batch_size, _, height, width = x.shape
+        # Project input
+        x = self.input_projection(x)
         
-        # Adapt input channels to Prithvi's expected format
-        x = self.input_adapter(x)
+        # Extract features using PrithviWxC backbone
+        features = self.backbone(x)
         
-        # Reshape to Prithvi's expected shape (B, H*W, C)
-        x = x.permute(0, 2, 3, 1).reshape(batch_size, height * width, -1)
+        # Extract additional features
+        features = self.feature_extraction(features)
         
-        # Forward through Prithvi
-        outputs = self.prithvi(inputs_embeds=x)
-        
-        # Get the last hidden state
-        hidden_states = outputs.last_hidden_state  # (B, H*W, embedding_dim)
-        
-        # Reshape back to spatial feature map (B, embedding_dim, H, W)
-        features = hidden_states.reshape(batch_size, height, width, -1).permute(0, 3, 1, 2)
-        
-        # Process DEM if available
-        if self.use_dem and dem is not None:
-            dem_features = self.dem_encoder(dem)
-            dem_features = self.dem_projection(dem_features)
-            
-            # Add DEM features to Prithvi features
-            features = features + dem_features
-        
-        # Extract features
-        features = self.feature_extractor(features)
-        
-        # Decode and upsample
+        # Decode to final output (4x upsampling)
         output = self.decoder(features)
         
         return output
+    
+    def prepare_for_training(self, training_config: Dict[str, Any]) -> None:
+        """Prepare the model for training.
+        
+        Args:
+            training_config: Dictionary containing training configuration
+        """
+        self.train()
+        self.backbone.prepare_for_training(training_config)
+    
+    def prepare_for_inference(self) -> None:
+        """Prepare the model for inference."""
+        self.eval()
+        self.backbone.prepare_for_inference()
 
 
 def create_model(config: Dict[str, Any]) -> PrithviDownscaler:
@@ -271,14 +254,183 @@ def create_model(config: Dict[str, Any]) -> PrithviDownscaler:
     data_config = config['data']
     
     return PrithviDownscaler(
-        prithvi_checkpoint=model_config['prithvi_checkpoint'],
-        use_pretrained=model_config['use_pretrained'],
-        freeze_encoder=model_config['freeze_encoder'],
-        unfreeze_layers=model_config['unfreeze_layers'],
         input_channels=len(data_config['input_vars']),
         output_channels=len(data_config['target_vars']),
-        embedding_dim=model_config['embedding_dim'],
-        upsampling_scales=model_config['upsampling_scales'],
-        dropout=model_config['dropout'],
-        use_dem=model_config['auxiliary_input']
+        hidden_dim=model_config['hidden_dim'],
+        prithvi_checkpoint=model_config['prithvi_checkpoint'],
+        cache_dir=model_config['cache_dir'],
+        device=model_config['device'],
+        use_pretrained=model_config['use_pretrained']
     ) 
+
+
+class PrithviDownscalerModule(pl.LightningModule):
+    """Lightning module for training PrithviDownscaler."""
+    
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        model: Optional[PrithviDownscaler] = None
+    ):
+        """Initialize the lightning module.
+        
+        Args:
+            config: Configuration dictionary containing model and training parameters
+            model: Optional pre-initialized PrithviDownscaler model
+        """
+        super().__init__()
+        self.save_hyperparameters(config)
+        self.config = config
+        
+        # Initialize model if not provided
+        if model is None:
+            model = create_model(config)
+        self.model = model
+        
+        # Loss weights
+        self.mae_weight = config['loss']['mae_weight']
+        self.mse_weight = config['loss']['mse_weight']
+        self.ssim_weight = config['loss'].get('ssim_weight', 0.0)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+        
+        Args:
+            x: Input tensor
+            
+        Returns:
+            Model output
+        """
+        return self.model(x)
+    
+    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        """Training step.
+        
+        Args:
+            batch: Dictionary containing input and target tensors
+            batch_idx: Index of the current batch
+            
+        Returns:
+            Loss value
+        """
+        x, y = batch['merra2_input'], batch['prism_target']
+        y_hat = self(x)
+        
+        # Calculate losses
+        mae_loss = F.l1_loss(y_hat, y)
+        mse_loss = F.mse_loss(y_hat, y)
+        
+        # Combine losses
+        loss = self.mae_weight * mae_loss + self.mse_weight * mse_loss
+        
+        # Log metrics
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train_mae', mae_loss, on_step=True, on_epoch=True)
+        self.log('train_mse', mse_loss, on_step=True, on_epoch=True)
+        
+        return loss
+    
+    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
+        """Validation step.
+        
+        Args:
+            batch: Dictionary containing input and target tensors
+            batch_idx: Index of the current batch
+            
+        Returns:
+            Dictionary containing validation metrics
+        """
+        x, y = batch['merra2_input'], batch['prism_target']
+        y_hat = self(x)
+        
+        # Calculate metrics
+        mae = F.l1_loss(y_hat, y)
+        mse = F.mse_loss(y_hat, y)
+        rmse = torch.sqrt(mse)
+        
+        # Log metrics
+        metrics = {
+            'val_mae': mae,
+            'val_mse': mse,
+            'val_rmse': rmse
+        }
+        self.log_dict(metrics, on_epoch=True, prog_bar=True)
+        
+        return metrics
+    
+    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
+        """Test step.
+        
+        Args:
+            batch: Dictionary containing input and target tensors
+            batch_idx: Index of the current batch
+            
+        Returns:
+            Dictionary containing test metrics
+        """
+        x, y = batch['merra2_input'], batch['prism_target']
+        y_hat = self(x)
+        
+        # Calculate metrics
+        mae = F.l1_loss(y_hat, y)
+        mse = F.mse_loss(y_hat, y)
+        rmse = torch.sqrt(mse)
+        
+        # Log metrics
+        metrics = {
+            'test_mae': mae,
+            'test_mse': mse,
+            'test_rmse': rmse
+        }
+        self.log_dict(metrics)
+        
+        return metrics
+    
+    def configure_optimizers(self) -> Dict[str, Any]:
+        """Configure optimizers and learning rate schedulers.
+        
+        Returns:
+            Dictionary containing optimizer and scheduler configuration
+        """
+        # Get optimizer parameters
+        optimizer_config = self.config['training']['optimizer']
+        lr = optimizer_config['lr']
+        weight_decay = optimizer_config['weight_decay']
+        
+        # Create optimizer
+        optimizer = AdamW(
+            self.parameters(),
+            lr=lr,
+            weight_decay=weight_decay
+        )
+        
+        # Get scheduler parameters
+        scheduler_config = self.config['training']['scheduler']
+        scheduler_name = scheduler_config['name']
+        
+        # Create scheduler
+        if scheduler_name == 'cosine':
+            scheduler = CosineAnnealingLR(
+                optimizer,
+                T_max=self.config['training']['epochs'],
+                eta_min=lr * 0.01
+            )
+        elif scheduler_name == 'plateau':
+            scheduler = ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                patience=self.config['model']['scheduler_patience'],
+                factor=self.config['model']['scheduler_factor']
+            )
+        else:
+            raise ValueError(f"Unsupported scheduler: {scheduler_name}")
+        
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'monitor': 'val_loss',
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        } 

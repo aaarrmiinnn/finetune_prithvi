@@ -4,10 +4,10 @@ data:
   prism_dir: "data/prism"
   dem_dir: "data/dem"
   dem_file: "PRISM_us_dem_4km_bil.bil"
-  dates: ["20250301", "20250302"]  # List of dates to use in training
+  dates: ["20250302"]  # Only use March 2nd data
   spatial_extent: null  # null for whole domain, or [min_lon, min_lat, max_lon, max_lat]
   cache_dir: "cache"
-  patch_size: 64  # Size of spatial patches for training
+  patch_size: 32  # Reduced from 64 to save memory
   input_vars: ["T2MMAX", "T2MMEAN", "T2MMIN", "TPRECMAX"]
   target_vars: ["tdmean", "ppt"]  # PRISM variables (mean temperature and precipitation)
   mask_ratio: 0.3  # Ratio of pixels to mask for training
@@ -15,20 +15,29 @@ data:
 
 # Model Configuration
 model:
-  name: "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M"
-  cache_dir: "models/cache"
-  use_pretrained: true
-  freeze_encoder: false
-  unfreeze_layers: []  # Layers to unfreeze if encoder is frozen
-  embedding_dim: 768
-  upsampling_scales: [2, 2]  # Upsampling scales at each level
-  dropout: 0.1
-  auxiliary_input: true  # Whether to use DEM as auxiliary input
+  # Prithvi model configuration
+  prithvi_checkpoint: "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M"  # Model name or path
+  cache_dir: "models/cache"  # Directory to cache downloaded models
+  use_pretrained: true  # Whether to use pretrained weights
+  device: "mps"  # Use MPS device for Mac; use "cuda" for GPU cluster
+  freeze_encoder: false  # Whether to freeze the encoder during training
+  
+  # Architecture configuration
+  hidden_dim: 128  # Reduced size for memory efficiency (was 256)
+  
+  # Training configuration
+  learning_rate: 1e-4
+  weight_decay: 1e-6
+  scheduler_patience: 5
+  scheduler_factor: 0.5
+  loss_weights:
+    mse: 1.0
+    mae: 1.0
 
 # Training Configuration
 training:
   epochs: 30
-  batch_size: 8
+  batch_size: 1  # Reduced from 2 to save memory
   optimizer:
     name: "AdamW"
     lr: 1.0e-4
@@ -36,11 +45,12 @@ training:
   scheduler:
     name: "cosine"
     warmup_epochs: 3
-  precision: 16  # Use mixed precision training (16 or 32)
+  precision: 32  # Use full precision on CPU; use 16 for GPU cluster for faster training
   gradient_clip_val: 1.0
-  log_every_n_steps: 50
+  log_every_n_steps: 1  # Reduced from 50 since we have fewer batches
   val_check_interval: 1.0  # Fraction of epoch to run validation
   save_top_k: 3  # Number of best checkpoints to save
+  resume_from_checkpoint: null  # Path to checkpoint to resume training
 
 # Loss Configuration
 loss:
@@ -55,12 +65,23 @@ logging:
   version: null  # Auto-increment
   log_graph: true
   tensorboard: true
-  wandb: false
+  wandb: true  # Enable Weights & Biases logging
   wandb_project: "merra2-prism-downscaling"
+  wandb_entity: null  # Your wandb username or team name
+  wandb_tags: ["prithvi", "downscaling", "merra2", "prism"]
+  wandb_notes: "Initial training run on local machine"
 
 # Hardware
 hardware:
-  accelerator: "auto"  # "cpu", "gpu", "tpu", or "auto"
+  accelerator: "mps"  # Use MPS (Metal Performance Shaders) on Mac; change to "gpu" for GPU cluster
   devices: 1
-  num_workers: 4
-  pin_memory: true 
+  num_workers: 1  # Reduced from 2 to save memory
+  pin_memory: true  # Enable pin_memory for GPU
+  
+# Cluster Settings (for future use)
+cluster:
+  enabled: false  # Set to true when running on cluster
+  distributed_backend: "ddp"  # Distributed Data Parallel
+  sync_batchnorm: true
+  strategy: "ddp"
+  find_unused_parameters: false 

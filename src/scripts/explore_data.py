@@ -94,11 +94,11 @@ def plot_data(merra2_data, prism_data, dem_data=None,
             # Set colormap and range based on variable type
             if var in ['T2MMAX', 'T2MMEAN', 'T2MMIN']:
                 cmap = 'RdBu_r'
-                vmin = -10
-                vmax = 30
-            else:
-                cmap = 'viridis'
-                vmin = None
+                vmin = -30
+                vmax = 40
+            else:  # Precipitation
+                cmap = 'YlGnBu'
+                vmin = 0
                 vmax = None
             
             im = axes[i, 0].imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
@@ -121,13 +121,14 @@ def plot_data(merra2_data, prism_data, dem_data=None,
             # Choose appropriate colormap and scale
             if var == 'tdmean':
                 cmap = 'RdBu_r'  # Temperature colormap
-                vmin = -10
-                vmax = 30
+                vmin = -30
+                vmax = 40
             elif var == 'ppt':
                 cmap = 'YlGnBu'  # Precipitation colormap
-                # Log scale for precipitation
+                # Log scale for precipitation, handling zeros
                 data = np.ma.masked_where(data <= 0, data)
-                data = np.log10(data + 1)
+                if not data.mask.all():  # Only apply log if we have positive values
+                    data = np.ma.log10(data)
                 vmin = None
                 vmax = None
             else:
@@ -185,12 +186,7 @@ def analyze_data_statistics(merra2_data, prism_data, dem_data=None):
     print("\nMERRA-2 Statistics:")
     for var in merra2_data.data_vars:
         data = merra2_data[var].values
-        if var in ['T2MMAX', 'T2MMEAN', 'T2MMIN']:
-            # Convert K to C for temperature variables
-            data = data - 273.15
-            unit = "°C"
-        else:
-            unit = "mm/day" if "PREC" in var else "unknown"
+        unit = merra2_data[var].attrs.get('units', 'unknown')
         
         print(f"\n{var} ({unit}):")
         print(f"  Min: {np.nanmin(data):.2f}")
@@ -203,7 +199,7 @@ def analyze_data_statistics(merra2_data, prism_data, dem_data=None):
     print("\nPRISM Statistics:")
     for var, da in prism_data.items():
         data = da.values
-        unit = "°C" if var == 'tdmean' else "mm/day" if var == 'ppt' else "unknown"
+        unit = da.attrs.get('units', 'unknown')
         
         print(f"\n{var} ({unit}):")
         print(f"  Min: {np.nanmin(data):.2f}")

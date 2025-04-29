@@ -5,9 +5,9 @@ from typing import Dict, List, Any, Optional, Union
 import os
 from pathlib import Path
 
-from ..models import PrithviDownscaler, create_model
-from ..utils.losses import DownscalingLoss
-from ..utils.metrics import calculate_metrics
+from src.models import PrithviDownscaler, create_model
+from src.utils.losses import DownscalingLoss
+from src.utils.metrics import calculate_metrics
 
 
 class DownscalingModule(pl.LightningModule):
