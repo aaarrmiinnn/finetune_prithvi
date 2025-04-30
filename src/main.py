@@ -55,6 +55,8 @@ def train(config, cluster_mode=False):
         config['training']['batch_size'] = 8  # Increase batch size on GPU
         config['cluster']['enabled'] = True
         config['logging']['wandb_notes'] = "Training run on GPU cluster"
+        config['cluster'].setdefault('find_unused_parameters', False)
+        print(f"Cluster mode enabled with device: {config['model']['device']}, accelerator: {config['hardware']['accelerator']}")
     
     # Create data loaders
     train_loader, val_loader, test_loader = create_dataloaders(
@@ -131,17 +133,30 @@ def train(config, cluster_mode=False):
     
     # Add cluster-specific configurations if enabled
     if cluster_mode or config['cluster']['enabled']:
+        # Make sure all required keys exist with safe defaults
+        config['cluster'].setdefault('strategy', 'auto')
+        config['cluster'].setdefault('sync_batchnorm', True)
+        config['cluster'].setdefault('find_unused_parameters', False)
+        
         trainer_kwargs.update({
             'strategy': config['cluster']['strategy'],
             'sync_batchnorm': config['cluster']['sync_batchnorm'],
-            'find_unused_parameters': config['cluster']['find_unused_parameters'],
         })
+        
+        # Only add find_unused_parameters if strategy is ddp (newer PyTorch Lightning versions don't support this)
+        if config['cluster']['strategy'] == 'ddp':
+            trainer_kwargs.update({
+                'find_unused_parameters': config['cluster']['find_unused_parameters'],
+            })
+        
+        print(f"Using cluster settings: {config['cluster']}")
     
     # Add checkpoint for resuming if specified
     if config['training']['resume_from_checkpoint']:
         trainer_kwargs['resume_from_checkpoint'] = config['training']['resume_from_checkpoint']
     
     # Create trainer
+    print(f"Using trainer parameters: {trainer_kwargs}")
     trainer = pl.Trainer(**trainer_kwargs)
     
     # Train the model
@@ -168,6 +183,7 @@ def test(config, checkpoint_path, cluster_mode=False):
         config['model']['device'] = 'cuda'
         config['training']['precision'] = 16
         config['cluster']['enabled'] = True
+        config['cluster'].setdefault('find_unused_parameters', False)
     
     # Create data loaders
     _, _, test_loader = create_dataloaders(
@@ -258,6 +274,10 @@ def main():
     
     # Set up paths and validate configuration
     config = setup_paths(config)
+    
+    # Ensure cluster section exists
+    if 'cluster' not in config:
+        config['cluster'] = {'enabled': False, 'strategy': 'auto', 'sync_batchnorm': True, 'find_unused_parameters': False}
     
     # Run selected mode
     if args.mode == "train":

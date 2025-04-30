@@ -33,7 +33,10 @@ if [ "$CUDA_AVAILABLE" = "True" ]; then
     sed -i 's/accelerator: "cpu"/accelerator: "gpu"/' $TEMP_CONFIG_FILE
     sed -i 's/devices: 1/devices: 1/' $TEMP_CONFIG_FILE
     sed -i 's/precision: 32/precision: 16/' $TEMP_CONFIG_FILE
-    sed -i 's/find_unused_parameters: false/# find_unused_parameters disabled for compatibility/' $TEMP_CONFIG_FILE
+    
+    # Don't comment out find_unused_parameters, but set it to false
+    sed -i 's/find_unused_parameters: false/find_unused_parameters: false/' $TEMP_CONFIG_FILE
+    
     sed -i 's/strategy: "ddp"/strategy: "auto"/' $TEMP_CONFIG_FILE
     
     # Most importantly: Update the device setting for model to match accelerator
@@ -55,7 +58,10 @@ else
     # Keep accelerator as CPU and make sure model device also uses CPU
     sed -i 's/accelerator: "gpu"/accelerator: "cpu"/' $TEMP_CONFIG_FILE
     sed -i 's/device: "cuda"/device: "cpu"/' $TEMP_CONFIG_FILE
-    sed -i 's/find_unused_parameters: false/# find_unused_parameters disabled for compatibility/' $TEMP_CONFIG_FILE
+    
+    # Don't comment out find_unused_parameters, but set it to false
+    sed -i 's/find_unused_parameters: false/find_unused_parameters: false/' $TEMP_CONFIG_FILE
+    
     sed -i 's/strategy: "ddp"/strategy: "auto"/' $TEMP_CONFIG_FILE
     
     # Disable pin_memory for CPU training
