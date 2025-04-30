@@ -53,6 +53,17 @@ config['logging']['wandb'] = True
 config['logging']['wandb_project'] = 'prithvi-downscaling'
 config['logging']['wandb_tags'] = ['memory-efficient', 'frozen-backbone', 'debugging']
 config['logging']['wandb_notes'] = 'Memory efficient training with NaN detection and frozen backbone'
+# Limit dates to prevent memory issues
+# Instead of auto-detecting all dates (which could be 91+), limit to most recent 15
+# Empty list would auto-detect all dates
+# config['data']['dates'] = []  # This would auto-detect ALL dates (too many)
+# For memory efficiency, limit to 15 recent dates or set specific date range
+# Months 1-4 of 2025 (select a reasonable subset)
+config['data']['dates'] = [
+    '20250315', '20250316', '20250317', '20250318', '20250319',
+    '20250320', '20250321', '20250322', '20250323', '20250324',
+    '20250325', '20250326', '20250327', '20250328', '20250329'
+]
 with open('$TEMP_CONFIG_FILE', 'w') as f:
     yaml.dump(config, f, default_flow_style=False)
 "
@@ -118,6 +129,37 @@ else:
 
 # Empty GPU cache before starting
 python -c "import torch; torch.cuda.empty_cache() if torch.cuda.is_available() else print('No CUDA available to empty cache')"
+
+# Validate cache files and remove corrupted ones
+echo "Validating cache files to prevent EOFError..."
+python -c "
+import os
+import numpy as np
+import glob
+
+cache_dir = 'cache'
+cache_files = glob.glob(os.path.join(cache_dir, 'merra2_prism_*.npz'))
+print(f'Checking {len(cache_files)} cache files...')
+
+for cache_file in cache_files:
+    try:
+        # Try to load the file to see if it's valid
+        data = np.load(cache_file, allow_pickle=True)
+        # Verify key content exists
+        if 'patches' not in data:
+            print(f'Warning: Missing data in {cache_file}, removing...')
+            os.remove(cache_file)
+            continue
+        
+        # Try to access the data to ensure it's readable
+        _ = data['patches'].tolist()
+        print(f'✓ Valid cache file: {os.path.basename(cache_file)}')
+    except (EOFError, KeyError, ValueError, Exception) as e:
+        # If any error occurs, remove the file
+        print(f'Found corrupted cache file {cache_file}: {str(e)}')
+        print(f'Removing {cache_file}...')
+        os.remove(cache_file)
+"
 
 # Run with memory efficient settings and anomaly detection
 echo "Running with memory-efficient configuration for 100 epochs (with frozen backbone)"
