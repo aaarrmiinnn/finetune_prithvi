@@ -145,6 +145,7 @@ class PrithviDownscaler(nn.Module):
         device: str = "cuda",
         use_pretrained: bool = True,
         gradient_checkpointing: bool = False,
+        freeze_encoder: bool = False,
     ):
         """Initialize the PrithviDownscaler model.
         
@@ -157,6 +158,7 @@ class PrithviDownscaler(nn.Module):
             device: Device to use (cuda or cpu)
             use_pretrained: Whether to use pretrained weights
             gradient_checkpointing: Whether to use gradient checkpointing to save memory
+            freeze_encoder: Whether to freeze the backbone transformer encoder
         """
         super().__init__()
         
@@ -181,6 +183,15 @@ class PrithviDownscaler(nn.Module):
             use_pretrained=use_pretrained,
             gradient_checkpointing=gradient_checkpointing,
         )
+        
+        # Store whether to freeze encoder
+        self.freeze_encoder = freeze_encoder
+        
+        # If freeze_encoder is True, freeze backbone parameters
+        if freeze_encoder:
+            print("Freezing Prithvi backbone parameters...")
+            for param in self.backbone.parameters():
+                param.requires_grad = False
         
         # Input projection layers
         self.input_projection = nn.Sequential(
@@ -280,11 +291,23 @@ class PrithviDownscaler(nn.Module):
         # Enable gradient checkpointing if specified in config
         self.gradient_checkpointing = training_config.get('gradient_checkpointing', self.gradient_checkpointing)
         
-        # Apply to backbone
-        self.backbone.prepare_for_training({
-            'gradient_checkpointing': self.gradient_checkpointing,
-            **training_config
-        })
+        # Check if we should freeze the encoder
+        freeze_encoder = training_config.get('freeze_encoder', self.freeze_encoder)
+        if freeze_encoder:
+            print("Freezing backbone parameters for training...")
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+            
+            # Even though we've frozen parameters, we still prepare the backbone
+            # but with a modified config that doesn't change the frozen state
+            modified_config = {**training_config, 'freeze_encoder': True}
+            self.backbone.prepare_for_training(modified_config)
+        else:
+            # Apply to backbone normally if not freezing
+            self.backbone.prepare_for_training({
+                'gradient_checkpointing': self.gradient_checkpointing,
+                **training_config
+            })
         
         if self.gradient_checkpointing:
             print("Gradient checkpointing enabled for PrithviDownscaler")
@@ -317,7 +340,8 @@ def create_model(config: Dict[str, Any]) -> PrithviDownscaler:
         cache_dir=model_config['cache_dir'],
         device=model_config['device'],
         use_pretrained=model_config['use_pretrained'],
-        gradient_checkpointing=model_config.get('gradient_checkpointing', False)
+        gradient_checkpointing=model_config.get('gradient_checkpointing', False),
+        freeze_encoder=model_config.get('freeze_encoder', False)
     )
 
 

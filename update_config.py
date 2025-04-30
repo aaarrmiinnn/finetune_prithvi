@@ -19,8 +19,10 @@ def update_config(config_path, output_path):
         config['model']['hidden_dim'] = 64  
         config['model']['device'] = 'cuda'
         config['model']['gradient_checkpointing'] = True
-        # Add freeze_backbone parameter to save memory
+        
+        # Explicitly freeze the Prithvi backbone - this is important!
         config['model']['freeze_encoder'] = True
+        config['model']['use_pretrained'] = True  # Ensure we're using pretrained weights
     
     # Update data settings
     if 'data' in config:

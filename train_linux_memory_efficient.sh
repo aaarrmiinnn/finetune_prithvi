@@ -1,5 +1,6 @@
 #!/bin/bash
 # Memory-efficient training script for Linux systems with GPU
+# This script freezes the Prithvi backbone and only trains adapter layers
 
 # Set environment variables for better GPU performance and memory management
 export CUDA_VISIBLE_DEVICES=0
@@ -12,6 +13,7 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 echo "Starting memory-efficient training on Linux system..."
 echo "Python version: $(python --version)"
 echo "Using GPU for training with memory optimizations..."
+echo "NOTE: This script freezes the Prithvi backbone and only trains adapter layers"
 
 # Create directories if they don't exist
 mkdir -p logs
@@ -43,6 +45,7 @@ with open('$CONFIG_FILE', 'r') as f:
 config['hardware']['accelerator'] = 'cpu'
 config['model']['device'] = 'cpu'
 config['training']['epochs'] = 100
+config['model']['freeze_encoder'] = True  # Make sure encoder is frozen
 with open('$TEMP_CONFIG_FILE', 'w') as f:
     yaml.dump(config, f, default_flow_style=False)
 "
@@ -52,7 +55,7 @@ fi
 python -c "import torch; torch.cuda.empty_cache() if torch.cuda.is_available() else print('No CUDA available to empty cache')"
 
 # Run with memory efficient settings
-echo "Running with memory-efficient configuration for 100 epochs"
+echo "Running with memory-efficient configuration for 100 epochs (with frozen backbone)"
 python src/main.py \
   --config $TEMP_CONFIG_FILE \
   --mode train \
