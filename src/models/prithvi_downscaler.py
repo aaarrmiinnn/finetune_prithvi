@@ -160,11 +160,18 @@ class PrithviDownscaler(nn.Module):
         """
         super().__init__()
         
+        # Ensure num_attention_heads divides hidden_dim evenly
+        # For small hidden_dim values, use a small number of heads (e.g., 4 or 8)
+        num_attention_heads = 8 if hidden_dim >= 64 else 4
+        
         # Initialize PrithviWxC backbone with the correct number of input channels
         config = PrithviWxCConfig(
             num_channels=input_channels,
             hidden_size=hidden_dim,
             patch_size=16,  # Fixed patch size for Prithvi
+            num_attention_heads=num_attention_heads,  # Ensure divisibility
+            num_hidden_layers=6,  # Reduce number of layers for smaller models
+            intermediate_size=hidden_dim * 4  # Standard multiplier for FF size
         )
         self.backbone = PrithviWxC(
             config=config,

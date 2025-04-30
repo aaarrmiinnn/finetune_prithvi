@@ -14,9 +14,13 @@ def update_config(config_path, output_path):
     
     # Update model settings
     if 'model' in config:
-        config['model']['hidden_dim'] = 16
+        # Set hidden_dim to 64 to work with 4 or 8 attention heads
+        # 64 is a good balance between memory efficiency and model capacity
+        config['model']['hidden_dim'] = 64  
         config['model']['device'] = 'cuda'
         config['model']['gradient_checkpointing'] = True
+        # Add freeze_backbone parameter to save memory
+        config['model']['freeze_encoder'] = True
     
     # Update data settings
     if 'data' in config:
@@ -28,6 +32,14 @@ def update_config(config_path, output_path):
         config['training']['batch_size'] = 1
         config['training']['precision'] = 16
         config['training']['accumulate_grad_batches'] = 16
+        # Add gradient clipping for stability
+        config['training']['gradient_clip_val'] = 1.0
+    
+    # Update loss settings to favor MAE over MSE (more stable)
+    if 'loss' in config:
+        config['loss']['mae_weight'] = 1.0
+        config['loss']['mse_weight'] = 0.1
+        config['loss']['ssim_weight'] = 0.0  # Disable SSIM to save memory
     
     # Update hardware settings
     if 'hardware' in config:
