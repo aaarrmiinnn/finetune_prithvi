@@ -41,21 +41,37 @@ def parse_args():
         help="Enable memory-efficient settings to prevent CUDA OOM errors"
     )
     
+    parser.add_argument(
+        "--detect_anomaly", action="store_true",
+        help="Enable PyTorch anomaly detection to help debug NaN values"
+    )
+    
     return parser.parse_args()
 
 
-def train(config, cluster_mode=False, memory_efficient=False):
+def train(config, cluster_mode=False, memory_efficient=False, detect_anomaly=False):
     """Train the model.
     
     Args:
         config: Configuration dictionary.
         cluster_mode: Whether to use cluster-specific configurations.
         memory_efficient: Whether to use memory-efficient settings.
+        detect_anomaly: Whether to enable PyTorch anomaly detection for debugging NaNs.
     """
     # Empty CUDA cache before starting if available
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         print("Emptied CUDA cache before training")
+    
+    # Enable anomaly detection if requested
+    if detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
+        print("PyTorch anomaly detection enabled - this will help debug NaN values but slow down training")
+        
+        # Also set deterministic mode for better debugging
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        print("Set PyTorch to deterministic mode for better debugging")
     
     # Update configuration for cluster if needed
     if cluster_mode:
@@ -323,7 +339,7 @@ def main():
     
     # Run selected mode
     if args.mode == "train":
-        model, trainer = train(config, cluster_mode=args.cluster, memory_efficient=args.memory_efficient)
+        model, trainer = train(config, cluster_mode=args.cluster, memory_efficient=args.memory_efficient, detect_anomaly=args.detect_anomaly)
     elif args.mode == "test":
         if args.checkpoint is None:
             raise ValueError("Checkpoint path must be provided for test mode")
