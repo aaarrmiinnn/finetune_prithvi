@@ -1,12 +1,13 @@
 """Dataset classes for MERRA-2 to PRISM downscaling."""
 import os
+import glob
+import random
+import re  # Add missing import for regex
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 import xarray as xr
-from typing import Dict, List, Tuple, Optional, Union, Callable
-import random
-import glob
+from typing import Dict, List, Tuple, Optional, Union, Callable, Any
 from pathlib import Path
 
 from .preprocessing import (
@@ -69,6 +70,7 @@ class MERRA2PRISMDataset(Dataset):
         
         # Find MERRA-2 files for each date
         self.merra2_files = {}
+        self.valid_dates = []  # Keep track of dates with valid files
         for date in self.dates:
             # Extract date components for file pattern matching
             year = date[:4]
@@ -80,9 +82,31 @@ class MERRA2PRISMDataset(Dataset):
             matching_files = glob.glob(pattern)
             
             if not matching_files:
-                raise FileNotFoundError(f"No MERRA-2 file found for date {date}")
+                print(f"Warning: No MERRA-2 file found for date {date}, skipping.")
+                continue
             
+            # Check if PRISM files exist for this date
+            prism_files_exist = True
+            for var in self.prism_vars:
+                prism_pattern = os.path.join(self.prism_dir, f"prism_{var}_us_*_{year}{month}{day}.zip")
+                if not glob.glob(prism_pattern):
+                    print(f"Warning: No PRISM {var} file found for date {date}, skipping.")
+                    prism_files_exist = False
+                    break
+            
+            if not prism_files_exist:
+                continue
+            
+            # If we got here, both MERRA-2 and PRISM files exist
             self.merra2_files[date] = matching_files[0]
+            self.valid_dates.append(date)
+        
+        if not self.valid_dates:
+            raise ValueError("No valid dates found with both MERRA-2 and PRISM files.")
+        
+        print(f"Found {len(self.valid_dates)} valid dates out of {len(self.dates)} requested.")
+        # Update self.dates to only include valid ones
+        self.dates = self.valid_dates
         
         # Prepare all data pairs and extract patches
         self.patches = []
@@ -329,25 +353,132 @@ def create_dataloaders(
     cache_dir = config['data']['cache_dir']
     batch_size = config['training']['batch_size']
     
+    # If no dates are specified, search for available dates
+    if not dates:
+        print("No dates specified, searching for available dates...")
+        # Search for MERRA-2 files
+        merra2_files = glob.glob(os.path.join(merra2_dir, "MERRA2_400.statD_2d_slv_Nx.*.nc4.nc4"))
+        available_dates = set()
+        for f in merra2_files:
+            # Extract date from filename
+            match = re.search(r'MERRA2_400\.statD_2d_slv_Nx\.(\d{8})\.nc4\.nc4', os.path.basename(f))
+            if match:
+                available_dates.add(match.group(1))
+        
+        # Check for corresponding PRISM files
+        valid_dates = []
+        for date in available_dates:
+            year = date[:4]
+            month = date[4:6]
+            day = date[6:8]
+            
+            all_prism_vars_exist = True
+            for var in target_vars:
+                prism_pattern = os.path.join(prism_dir, f"prism_{var}_us_*_{year}{month}{day}.zip")
+                if not glob.glob(prism_pattern):
+                    all_prism_vars_exist = False
+                    break
+            
+            if all_prism_vars_exist:
+                valid_dates.append(date)
+        
+        if not valid_dates:
+            raise ValueError("No valid dates found with both MERRA-2 and PRISM files.")
+        
+        dates = sorted(valid_dates)
+        print(f"Found {len(dates)} valid dates: {dates}")
+    
     # Create dataset with all data
-    full_dataset = MERRA2PRISMDataset(
-        merra2_dir=merra2_dir,
-        prism_dir=prism_dir,
-        dates=dates,
-        merra2_vars=input_vars,
-        prism_vars=target_vars,
-        dem_path=dem_path,
-        patch_size=patch_size,
-        normalize=True,
-        mask_ratio=mask_ratio,
-        cache_dir=cache_dir
-    )
+    try:
+        full_dataset = MERRA2PRISMDataset(
+            merra2_dir=merra2_dir,
+            prism_dir=prism_dir,
+            dates=dates,
+            merra2_vars=input_vars,
+            prism_vars=target_vars,
+            dem_path=dem_path,
+            patch_size=patch_size,
+            normalize=True,
+            mask_ratio=mask_ratio,
+            cache_dir=cache_dir
+        )
+    except ValueError as e:
+        print(f"Error creating dataset: {str(e)}")
+        print("Attempting to find valid dates...")
+        
+        # Try to find valid dates automatically
+        merra2_files = glob.glob(os.path.join(merra2_dir, "MERRA2_400.statD_2d_slv_Nx.*.nc4.nc4"))
+        available_dates = set()
+        for f in merra2_files:
+            # Extract date from filename
+            match = re.search(r'MERRA2_400\.statD_2d_slv_Nx\.(\d{8})\.nc4\.nc4', os.path.basename(f))
+            if match:
+                available_dates.add(match.group(1))
+        
+        # Filter to dates that have PRISM files for all variables
+        valid_dates = []
+        for date in available_dates:
+            year = date[:4]
+            month = date[4:6]
+            day = date[6:8]
+            
+            all_prism_vars_exist = True
+            for var in target_vars:
+                prism_pattern = os.path.join(prism_dir, f"prism_{var}_us_*_{year}{month}{day}.zip")
+                if not glob.glob(prism_pattern):
+                    all_prism_vars_exist = False
+                    break
+            
+            if all_prism_vars_exist:
+                valid_dates.append(date)
+        
+        if not valid_dates:
+            raise ValueError("No valid dates found with both MERRA-2 and PRISM files, even after scanning.")
+        
+        print(f"Found {len(valid_dates)} valid dates: {valid_dates}")
+        
+        # Retry with valid dates
+        full_dataset = MERRA2PRISMDataset(
+            merra2_dir=merra2_dir,
+            prism_dir=prism_dir,
+            dates=valid_dates,
+            merra2_vars=input_vars,
+            prism_vars=target_vars,
+            dem_path=dem_path,
+            patch_size=patch_size,
+            normalize=True,
+            mask_ratio=mask_ratio,
+            cache_dir=cache_dir
+        )
     
     # Determine the split sizes
     dataset_size = len(full_dataset)
+    
+    if dataset_size == 0:
+        raise ValueError("No data samples found. Dataset is empty.")
+    
     train_size = int(train_split * dataset_size)
     val_size = int(val_split * dataset_size)
     test_size = dataset_size - train_size - val_size
+    
+    # Ensure at least 1 sample in each split if possible
+    if dataset_size >= 3:
+        if train_size == 0:
+            train_size = 1
+        if val_size == 0:
+            val_size = 1
+        if test_size == 0:
+            test_size = 1
+        # Adjust to ensure the sizes sum to dataset_size
+        while train_size + val_size + test_size > dataset_size:
+            if test_size > 1:
+                test_size -= 1
+            elif val_size > 1:
+                val_size -= 1
+            else:
+                train_size -= 1
+    
+    print(f"Dataset split: {train_size} training, {val_size} validation, {test_size} testing")
     
     # Split the dataset
     indices = list(range(dataset_size))

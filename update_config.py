@@ -27,6 +27,8 @@ def update_config(config_path, output_path):
     # Update data settings
     if 'data' in config:
         config['data']['patch_size'] = 8
+        # Set dates to an empty list to auto-detect available dates
+        config['data']['dates'] = []
     
     # Update training settings
     if 'training' in config:
