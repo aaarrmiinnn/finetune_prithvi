@@ -36,16 +36,27 @@ def parse_args():
         help="Enable cluster mode configuration"
     )
     
+    parser.add_argument(
+        "--memory_efficient", action="store_true",
+        help="Enable memory-efficient settings to prevent CUDA OOM errors"
+    )
+    
     return parser.parse_args()
 
 
-def train(config, cluster_mode=False):
+def train(config, cluster_mode=False, memory_efficient=False):
     """Train the model.
     
     Args:
         config: Configuration dictionary.
         cluster_mode: Whether to use cluster-specific configurations.
+        memory_efficient: Whether to use memory-efficient settings.
     """
+    # Empty CUDA cache before starting if available
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print("Emptied CUDA cache before training")
+    
     # Update configuration for cluster if needed
     if cluster_mode:
         config['hardware']['accelerator'] = 'gpu'
@@ -57,6 +68,36 @@ def train(config, cluster_mode=False):
         config['logging']['wandb_notes'] = "Training run on GPU cluster"
         config['cluster'].setdefault('find_unused_parameters', False)
         print(f"Cluster mode enabled with device: {config['model']['device']}, accelerator: {config['hardware']['accelerator']}")
+    
+    # Apply memory-efficient settings if requested
+    if memory_efficient:
+        # Reduce model complexity
+        config['model']['hidden_dim'] = min(16, config['model']['hidden_dim'])
+        
+        # Reduce batch size and increase gradient accumulation
+        config['training']['batch_size'] = 1
+        config['training']['accumulate_grad_batches'] = max(16, config['training'].get('accumulate_grad_batches', 1))
+        
+        # Enable mixed precision
+        config['training']['precision'] = 16
+        
+        # Enable gradient checkpointing (saves memory at cost of computation)
+        config.setdefault('model', {}).setdefault('gradient_checkpointing', True)
+        
+        # Reduce patch size for less memory usage
+        config['data']['patch_size'] = min(8, config['data']['patch_size'])
+        
+        # Set optimized dataloader settings
+        config['hardware']['num_workers'] = 2
+        config['hardware']['pin_memory'] = True
+        
+        print("Memory-efficient settings applied:")
+        print(f"- Model hidden dim: {config['model']['hidden_dim']}")
+        print(f"- Batch size: {config['training']['batch_size']}")
+        print(f"- Gradient accumulation: {config['training']['accumulate_grad_batches']}")
+        print(f"- Precision: {config['training']['precision']}")
+        print(f"- Patch size: {config['data']['patch_size']}")
+        print(f"- Gradient checkpointing: {config['model'].get('gradient_checkpointing', False)}")
     
     # Create data loaders
     train_loader, val_loader, test_loader = create_dataloaders(
@@ -129,6 +170,7 @@ def train(config, cluster_mode=False):
         'log_every_n_steps': config['training']['log_every_n_steps'],
         'val_check_interval': config['training']['val_check_interval'],
         'gradient_clip_val': config['training']['gradient_clip_val'],
+        'accumulate_grad_batches': config['training'].get('accumulate_grad_batches', 1),
     }
     
     # Add cluster-specific configurations if enabled
@@ -281,7 +323,7 @@ def main():
     
     # Run selected mode
     if args.mode == "train":
-        model, trainer = train(config, cluster_mode=args.cluster)
+        model, trainer = train(config, cluster_mode=args.cluster, memory_efficient=args.memory_efficient)
     elif args.mode == "test":
         if args.checkpoint is None:
             raise ValueError("Checkpoint path must be provided for test mode")

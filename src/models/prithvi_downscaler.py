@@ -144,6 +144,7 @@ class PrithviDownscaler(nn.Module):
         cache_dir: str = "models/cache",
         device: str = "cuda",
         use_pretrained: bool = True,
+        gradient_checkpointing: bool = False,
     ):
         """Initialize the PrithviDownscaler model.
         
@@ -155,6 +156,7 @@ class PrithviDownscaler(nn.Module):
             cache_dir: Directory to cache downloaded models
             device: Device to use (cuda or cpu)
             use_pretrained: Whether to use pretrained weights
+            gradient_checkpointing: Whether to use gradient checkpointing to save memory
         """
         super().__init__()
         
@@ -170,6 +172,7 @@ class PrithviDownscaler(nn.Module):
             cache_dir=cache_dir,
             device=device,
             use_pretrained=use_pretrained,
+            gradient_checkpointing=gradient_checkpointing,
         )
         
         # Input projection layers
@@ -202,6 +205,33 @@ class PrithviDownscaler(nn.Module):
             # Final convolution to get desired number of channels
             nn.Conv2d(hidden_dim // 4, output_channels, kernel_size=1),
         )
+        
+        # Flag for gradient checkpointing
+        self.gradient_checkpointing = gradient_checkpointing
+    
+    def _feature_extraction_checkpoint(self, features: torch.Tensor) -> torch.Tensor:
+        """Apply feature extraction with gradient checkpointing."""
+        def create_custom_forward(module):
+            def custom_forward(*inputs):
+                return module(inputs[0])
+            return custom_forward
+        
+        return torch.utils.checkpoint.checkpoint(
+            create_custom_forward(self.feature_extraction), 
+            features
+        )
+    
+    def _decoder_checkpoint(self, features: torch.Tensor) -> torch.Tensor:
+        """Apply decoder with gradient checkpointing."""
+        def create_custom_forward(module):
+            def custom_forward(*inputs):
+                return module(inputs[0])
+            return custom_forward
+        
+        return torch.utils.checkpoint.checkpoint(
+            create_custom_forward(self.decoder), 
+            features
+        )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the model.
@@ -218,11 +248,17 @@ class PrithviDownscaler(nn.Module):
         # Extract features using PrithviWxC backbone
         features = self.backbone(x)
         
-        # Extract additional features
-        features = self.feature_extraction(features)
+        # Extract additional features with optional gradient checkpointing
+        if self.gradient_checkpointing and self.training:
+            features = self._feature_extraction_checkpoint(features)
+        else:
+            features = self.feature_extraction(features)
         
-        # Decode to final output (4x upsampling)
-        output = self.decoder(features)
+        # Decode to final output (4x upsampling) with optional gradient checkpointing
+        if self.gradient_checkpointing and self.training:
+            output = self._decoder_checkpoint(features)
+        else:
+            output = self.decoder(features)
         
         return output
     
@@ -233,11 +269,24 @@ class PrithviDownscaler(nn.Module):
             training_config: Dictionary containing training configuration
         """
         self.train()
-        self.backbone.prepare_for_training(training_config)
+        
+        # Enable gradient checkpointing if specified in config
+        self.gradient_checkpointing = training_config.get('gradient_checkpointing', self.gradient_checkpointing)
+        
+        # Apply to backbone
+        self.backbone.prepare_for_training({
+            'gradient_checkpointing': self.gradient_checkpointing,
+            **training_config
+        })
+        
+        if self.gradient_checkpointing:
+            print("Gradient checkpointing enabled for PrithviDownscaler")
     
     def prepare_for_inference(self) -> None:
         """Prepare the model for inference."""
         self.eval()
+        # Disable gradient checkpointing for inference
+        self.gradient_checkpointing = False
         self.backbone.prepare_for_inference()
 
 
@@ -260,8 +309,9 @@ def create_model(config: Dict[str, Any]) -> PrithviDownscaler:
         prithvi_checkpoint=model_config['prithvi_checkpoint'],
         cache_dir=model_config['cache_dir'],
         device=model_config['device'],
-        use_pretrained=model_config['use_pretrained']
-    ) 
+        use_pretrained=model_config['use_pretrained'],
+        gradient_checkpointing=model_config.get('gradient_checkpointing', False)
+    )
 
 
 class PrithviDownscalerModule(pl.LightningModule):

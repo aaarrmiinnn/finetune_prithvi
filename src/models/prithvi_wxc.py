@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.nn import Parameter
 from transformers import PreTrainedModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, Tuple
 from .configuration_prithvi_wxc import PrithviWxCConfig
 
 class PatchEmbedding(nn.Module):
@@ -120,6 +120,30 @@ class TransformerBlock(nn.Module):
         x = x + residual
         
         return x
+        
+    def forward_with_attention(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass with attention outputs (for gradient checkpointing).
+        
+        Args:
+            x: Input tensor of shape (B, N, D)
+            
+        Returns:
+            Tuple of (output tensor of shape (B, N, D), attention weights)
+        """
+        # Self-attention
+        residual = x
+        x = self.norm1(x)
+        x, attn_weights = self.attention(x, x, x)
+        x = self.dropout(x)
+        x = x + residual
+        
+        # MLP
+        residual = x
+        x = self.norm2(x)
+        x = self.mlp(x)
+        x = x + residual
+        
+        return x, attn_weights
 
 class PrithviWxC(PreTrainedModel):
     """Prithvi-WxC model implementation."""
@@ -133,7 +157,8 @@ class PrithviWxC(PreTrainedModel):
         model_name: str = "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M",
         cache_dir: Optional[str] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        use_pretrained: bool = True
+        use_pretrained: bool = True,
+        gradient_checkpointing: bool = False
     ):
         """Initialize the Prithvi-WxC model.
         
@@ -143,6 +168,7 @@ class PrithviWxC(PreTrainedModel):
             cache_dir: Directory to cache the model
             device: Device to load the model on
             use_pretrained: Whether to load pretrained weights
+            gradient_checkpointing: Whether to use gradient checkpointing to save memory
         """
         if config is None:
             config = PrithviWxCConfig()
@@ -152,6 +178,7 @@ class PrithviWxC(PreTrainedModel):
         self.model_name = model_name
         self.cache_dir = cache_dir or "models/cache"
         self._device = torch.device(device)
+        self.gradient_checkpointing = gradient_checkpointing
         
         # Patch embedding
         self.patch_embed = PatchEmbedding(config)
@@ -200,10 +227,35 @@ class PrithviWxC(PreTrainedModel):
     def prepare_for_training(self, training_config: Dict[str, Any]) -> None:
         """Prepare the model for training."""
         self.train()
+        
+        # Enable gradient checkpointing if specified in config
+        if training_config.get('gradient_checkpointing', False) or getattr(self, 'gradient_checkpointing', False):
+            self.gradient_checkpointing = True
+            self.gradient_checkpointing_enable()
+            print("Gradient checkpointing enabled for Prithvi model")
     
     def prepare_for_inference(self) -> None:
         """Prepare the model for inference."""
         self.eval()
+        # Disable gradient checkpointing during inference
+        self.gradient_checkpointing = False
+    
+    def gradient_checkpointing_enable(self):
+        """Enable gradient checkpointing for memory efficiency."""
+        self.gradient_checkpointing = True
+    
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing."""
+        self.gradient_checkpointing = False
+    
+    def _custom_block_forward(self, block: TransformerBlock, x: torch.Tensor) -> torch.Tensor:
+        """Custom forward pass for transformer blocks with gradient checkpointing."""
+        def create_custom_forward(module):
+            def custom_forward(*inputs):
+                return module(inputs[0])
+            return custom_forward
+        
+        return torch.utils.checkpoint.checkpoint(create_custom_forward(block), x)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -224,9 +276,13 @@ class PrithviWxC(PreTrainedModel):
         pos_embed = self._get_pos_embed(x)
         x = x + pos_embed
         
-        # Apply transformer blocks
-        for block in self.blocks:
-            x = block(x)
+        # Apply transformer blocks with optional gradient checkpointing
+        if self.gradient_checkpointing and self.training:
+            for block in self.blocks:
+                x = self._custom_block_forward(block, x)
+        else:
+            for block in self.blocks:
+                x = block(x)
         
         # Final normalization
         x = self.norm(x)
