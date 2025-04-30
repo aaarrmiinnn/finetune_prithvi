@@ -48,6 +48,11 @@ config['data']['clip_extreme_values'] = True  # Clip extreme values
 config['data']['replace_nan_with_mean'] = True  # Replace NaNs with mean values
 # Add NaN detection during training
 config['training']['detect_anomaly'] = True  # Enable PyTorch anomaly detection
+# Enable Weights & Biases logging
+config['logging']['wandb'] = True
+config['logging']['wandb_project'] = 'prithvi-downscaling'
+config['logging']['wandb_tags'] = ['memory-efficient', 'frozen-backbone', 'debugging']
+config['logging']['wandb_notes'] = 'Memory efficient training with NaN detection and frozen backbone'
 with open('$TEMP_CONFIG_FILE', 'w') as f:
     yaml.dump(config, f, default_flow_style=False)
 "

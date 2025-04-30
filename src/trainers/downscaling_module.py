@@ -34,6 +34,21 @@ class DownscalingModule(pl.LightningModule):
         
         # Store validation outputs
         self.validation_step_outputs = []
+        
+        # NaN tracking for less verbose logging
+        self._nan_detected = {
+            'input': False,
+            'output': False,
+            'target': False,
+            'loss': False
+        }
+        self._nan_count = {
+            'input': 0,
+            'output': 0,
+            'target': 0,
+            'loss': 0
+        }
+        self._nan_warning_frequency = 10  # Only warn every N occurrences
     
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Forward pass.
@@ -63,7 +78,11 @@ class DownscalingModule(pl.LightningModule):
         """
         # Check for NaNs in input
         if torch.isnan(batch['merra2_input']).any():
-            self.print(f"WARNING: NaN detected in input data at batch {batch_idx}")
+            self._nan_count['input'] += 1
+            # Only log first occurrence and then at frequency intervals
+            if not self._nan_detected['input'] or self._nan_count['input'] % self._nan_warning_frequency == 0:
+                self.print(f"WARNING: NaN detected in input data at batch {batch_idx}. Total occurrences: {self._nan_count['input']}")
+                self._nan_detected['input'] = True
             # Replace NaNs with zeros to prevent propagation
             batch['merra2_input'] = torch.nan_to_num(batch['merra2_input'], nan=0.0)
         
@@ -73,13 +92,21 @@ class DownscalingModule(pl.LightningModule):
         
         # Check for NaNs in output
         if torch.isnan(y_pred).any():
-            self.print(f"WARNING: NaN detected in model output at batch {batch_idx}")
+            self._nan_count['output'] += 1
+            # Only log first occurrence and then at frequency intervals
+            if not self._nan_detected['output'] or self._nan_count['output'] % self._nan_warning_frequency == 0:
+                self.print(f"WARNING: NaN detected in model output at batch {batch_idx}. Total occurrences: {self._nan_count['output']}")
+                self._nan_detected['output'] = True
             # Replace NaNs with zeros for loss calculation
             y_pred = torch.nan_to_num(y_pred, nan=0.0)
         
         # Check for NaNs in target
         if torch.isnan(y_true).any():
-            self.print(f"WARNING: NaN detected in target data at batch {batch_idx}")
+            self._nan_count['target'] += 1
+            # Only log first occurrence and then at frequency intervals
+            if not self._nan_detected['target'] or self._nan_count['target'] % self._nan_warning_frequency == 0:
+                self.print(f"WARNING: NaN detected in target data at batch {batch_idx}. Total occurrences: {self._nan_count['target']}")
+                self._nan_detected['target'] = True
             # Replace NaNs with zeros for loss calculation
             y_true = torch.nan_to_num(y_true, nan=0.0)
         
@@ -90,10 +117,13 @@ class DownscalingModule(pl.LightningModule):
             
             # Check for NaN losses
             if torch.isnan(mse_loss) or torch.isnan(mae_loss):
-                self.print(f"WARNING: NaN loss detected at batch {batch_idx}")
+                self._nan_count['loss'] += 1
+                # Always report loss NaNs with detailed stats
+                self.print(f"WARNING: NaN loss detected at batch {batch_idx}. Total occurrences: {self._nan_count['loss']}")
                 self.print(f"MSE: {mse_loss}, MAE: {mae_loss}")
                 self.print(f"Prediction stats - min: {y_pred.min()}, max: {y_pred.max()}, mean: {y_pred.mean()}")
                 self.print(f"Target stats - min: {y_true.min()}, max: {y_true.max()}, mean: {y_true.mean()}")
+                self._nan_detected['loss'] = True
                 
                 # Use a small constant loss to prevent training failure
                 mse_loss = torch.tensor(1.0, device=self.device)
@@ -114,6 +144,12 @@ class DownscalingModule(pl.LightningModule):
         self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('train/mse', mse_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log('train/mae', mae_loss, on_step=False, on_epoch=True, sync_dist=True)
+        
+        # Log NaN counts to track progress
+        if any(self._nan_count.values()):
+            for key, count in self._nan_count.items():
+                if count > 0:
+                    self.log(f'train/nan_{key}_count', count, on_step=False, on_epoch=True, sync_dist=True)
         
         # Log learning rate
         scheduler = self.lr_schedulers()
@@ -136,9 +172,10 @@ class DownscalingModule(pl.LightningModule):
         Returns:
             Dictionary with validation results
         """
-        # Check for NaNs in input
+        # Check for NaNs in input (less verbose for validation)
         if torch.isnan(batch['merra2_input']).any():
-            self.print(f"WARNING: NaN detected in validation input data at batch {batch_idx}")
+            if not self._nan_detected['input'] or batch_idx == 0:  # Only log first batch of each validation run
+                self.print(f"WARNING: NaN detected in validation input data at batch {batch_idx}")
             # Replace NaNs with zeros to prevent propagation
             batch['merra2_input'] = torch.nan_to_num(batch['merra2_input'], nan=0.0)
         
@@ -146,15 +183,17 @@ class DownscalingModule(pl.LightningModule):
         y_pred = self(batch)
         y_true = batch['prism_target']
         
-        # Check for NaNs in output
+        # Check for NaNs in output (less verbose for validation)
         if torch.isnan(y_pred).any():
-            self.print(f"WARNING: NaN detected in validation model output at batch {batch_idx}")
+            if not self._nan_detected['output'] or batch_idx == 0:
+                self.print(f"WARNING: NaN detected in validation model output at batch {batch_idx}")
             # Replace NaNs with zeros for loss calculation
             y_pred = torch.nan_to_num(y_pred, nan=0.0)
         
-        # Check for NaNs in target
+        # Check for NaNs in target (less verbose for validation)
         if torch.isnan(y_true).any():
-            self.print(f"WARNING: NaN detected in validation target data at batch {batch_idx}")
+            if not self._nan_detected['target'] or batch_idx == 0:
+                self.print(f"WARNING: NaN detected in validation target data at batch {batch_idx}")
             # Replace NaNs with zeros for loss calculation
             y_true = torch.nan_to_num(y_true, nan=0.0)
         
@@ -165,6 +204,7 @@ class DownscalingModule(pl.LightningModule):
             
             # Check for NaN losses
             if torch.isnan(mse_loss) or torch.isnan(mae_loss):
+                # Always report validation loss NaNs with detailed stats
                 self.print(f"WARNING: NaN validation loss detected at batch {batch_idx}")
                 self.print(f"MSE: {mse_loss}, MAE: {mae_loss}")
                 self.print(f"Prediction stats - min: {y_pred.min()}, max: {y_pred.max()}, mean: {y_pred.mean()}")
@@ -248,9 +288,11 @@ class DownscalingModule(pl.LightningModule):
         Returns:
             Dictionary with test results
         """
-        # Check for NaNs in input
-        if torch.isnan(batch['merra2_input']).any():
-            self.print(f"WARNING: NaN detected in test input data at batch {batch_idx}")
+        # Check for NaNs in input (least verbose for testing)
+        has_input_nan = torch.isnan(batch['merra2_input']).any()
+        if has_input_nan:
+            if batch_idx == 0:  # Only log once during testing
+                self.print(f"WARNING: NaN values detected in test input data (quietly replacing)")
             # Replace NaNs with zeros to prevent propagation
             batch['merra2_input'] = torch.nan_to_num(batch['merra2_input'], nan=0.0)
         
@@ -258,15 +300,19 @@ class DownscalingModule(pl.LightningModule):
         y_pred = self(batch)
         y_true = batch['prism_target']
         
-        # Check for NaNs in output
-        if torch.isnan(y_pred).any():
-            self.print(f"WARNING: NaN detected in test model output at batch {batch_idx}")
+        # Check for NaNs in output (least verbose for testing)
+        has_output_nan = torch.isnan(y_pred).any()
+        if has_output_nan:
+            if batch_idx == 0:  # Only log once during testing
+                self.print(f"WARNING: NaN values detected in test model output (quietly replacing)")
             # Replace NaNs with zeros for loss calculation
             y_pred = torch.nan_to_num(y_pred, nan=0.0)
         
-        # Check for NaNs in target
-        if torch.isnan(y_true).any():
-            self.print(f"WARNING: NaN detected in test target data at batch {batch_idx}")
+        # Check for NaNs in target (least verbose for testing)
+        has_target_nan = torch.isnan(y_true).any()
+        if has_target_nan:
+            if batch_idx == 0:  # Only log once during testing
+                self.print(f"WARNING: NaN values detected in test target data (quietly replacing)")
             # Replace NaNs with zeros for loss calculation
             y_true = torch.nan_to_num(y_true, nan=0.0)
         
@@ -277,16 +323,15 @@ class DownscalingModule(pl.LightningModule):
             
             # Check for NaN losses
             if torch.isnan(mse_loss) or torch.isnan(mae_loss):
-                self.print(f"WARNING: NaN test loss detected at batch {batch_idx}")
-                self.print(f"MSE: {mse_loss}, MAE: {mae_loss}")
-                self.print(f"Prediction stats - min: {y_pred.min()}, max: {y_pred.max()}, mean: {y_pred.mean()}")
-                self.print(f"Target stats - min: {y_true.min()}, max: {y_true.max()}, mean: {y_true.mean()}")
+                if batch_idx == 0:  # Only log once during testing
+                    self.print(f"WARNING: NaN test loss detected (replacing with constant loss)")
                 
                 # Use a small constant loss to prevent test failure
                 mse_loss = torch.tensor(1.0, device=self.device)
                 mae_loss = torch.tensor(1.0, device=self.device)
         except Exception as e:
-            self.print(f"ERROR during test loss calculation: {str(e)}")
+            if batch_idx == 0:  # Only log once during testing
+                self.print(f"ERROR during test loss calculation: {str(e)}")
             # Use a small constant loss to prevent test failure
             mse_loss = torch.tensor(1.0, device=self.device)
             mae_loss = torch.tensor(1.0, device=self.device)
