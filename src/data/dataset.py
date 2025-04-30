@@ -77,8 +77,8 @@ class MERRA2PRISMDataset(Dataset):
             month = date[4:6]
             day = date[6:8]
             
-            # Match pattern based on MERRA-2 file naming convention
-            pattern = os.path.join(self.merra2_dir, f"MERRA2_400.statD_2d_slv_Nx.{year}{month}{day}.nc4.nc4")
+            # Match pattern based on MERRA-2 file naming convention (exactly as seen in the data directory)
+            pattern = os.path.join(self.merra2_dir, f"MERRA2_400.statD_2d_slv_Nx.{date}.nc4")
             matching_files = glob.glob(pattern)
             
             if not matching_files:
@@ -86,10 +86,12 @@ class MERRA2PRISMDataset(Dataset):
                 continue
             
             # Check if PRISM files exist for this date
+            # PRISM files follow the pattern prism_<var>_us_25m_YYYYMMDD.zip as seen in the data directory
             prism_files_exist = True
             for var in self.prism_vars:
-                prism_pattern = os.path.join(self.prism_dir, f"prism_{var}_us_*_{year}{month}{day}.zip")
-                if not glob.glob(prism_pattern):
+                prism_pattern = os.path.join(self.prism_dir, f"prism_{var}_us_25m_{date}.zip")
+                matching_prism_files = glob.glob(prism_pattern)
+                if not matching_prism_files:
                     print(f"Warning: No PRISM {var} file found for date {date}, skipping.")
                     prism_files_exist = False
                     break
@@ -102,6 +104,16 @@ class MERRA2PRISMDataset(Dataset):
             self.valid_dates.append(date)
         
         if not self.valid_dates:
+            # Print more information for debugging
+            print("Error: No valid dates found with both MERRA-2 and PRISM files.")
+            print(f"Available MERRA-2 files:")
+            for f in glob.glob(os.path.join(self.merra2_dir, "*.nc4")):
+                print(f"  - {os.path.basename(f)}")
+            print(f"Available PRISM files for required variables {self.prism_vars}:")
+            for var in self.prism_vars:
+                for f in glob.glob(os.path.join(self.prism_dir, f"prism_{var}_*.zip")):
+                    print(f"  - {os.path.basename(f)}")
+            
             raise ValueError("No valid dates found with both MERRA-2 and PRISM files.")
         
         print(f"Found {len(self.valid_dates)} valid dates out of {len(self.dates)} requested.")
@@ -357,24 +369,22 @@ def create_dataloaders(
     if not dates:
         print("No dates specified, searching for available dates...")
         # Search for MERRA-2 files
-        merra2_files = glob.glob(os.path.join(merra2_dir, "MERRA2_400.statD_2d_slv_Nx.*.nc4.nc4"))
+        merra2_files = glob.glob(os.path.join(merra2_dir, "MERRA2_400.statD_2d_slv_Nx.*.nc4"))
         available_dates = set()
         for f in merra2_files:
-            # Extract date from filename
-            match = re.search(r'MERRA2_400\.statD_2d_slv_Nx\.(\d{8})\.nc4\.nc4', os.path.basename(f))
+            # Extract date from filename using the pattern MERRA2_400.statD_2d_slv_Nx.YYYYMMDD.nc4
+            match = re.search(r'MERRA2_400\.statD_2d_slv_Nx\.(\d{8})\.nc4', os.path.basename(f))
             if match:
                 available_dates.add(match.group(1))
         
         # Check for corresponding PRISM files
         valid_dates = []
         for date in available_dates:
-            year = date[:4]
-            month = date[4:6]
-            day = date[6:8]
-            
+            # Check if all required PRISM variables exist for this date
             all_prism_vars_exist = True
             for var in target_vars:
-                prism_pattern = os.path.join(prism_dir, f"prism_{var}_us_*_{year}{month}{day}.zip")
+                # Look for files exactly matching prism_<var>_us_25m_YYYYMMDD.zip
+                prism_pattern = os.path.join(prism_dir, f"prism_{var}_us_25m_{date}.zip")
                 if not glob.glob(prism_pattern):
                     all_prism_vars_exist = False
                     break
@@ -383,6 +393,31 @@ def create_dataloaders(
                 valid_dates.append(date)
         
         if not valid_dates:
+            # Print more debugging information
+            print("Error: No valid dates found with both MERRA-2 and PRISM files.")
+            print("Available MERRA-2 files:")
+            for f in merra2_files:
+                print(f"  - {os.path.basename(f)}")
+            print(f"Available PRISM files for required variables {target_vars}:")
+            for var in target_vars:
+                for f in glob.glob(os.path.join(prism_dir, f"prism_{var}_*.zip")):
+                    print(f"  - {os.path.basename(f)}")
+            
+            # Check if we should modify the target variables based on available files
+            prism_var_pattern = re.compile(r'prism_([^_]+)_us_25m_\d{8}\.zip')
+            available_vars = set()
+            for f in glob.glob(os.path.join(prism_dir, "prism_*_us_25m_*.zip")):
+                match = prism_var_pattern.search(os.path.basename(f))
+                if match:
+                    available_vars.add(match.group(1))
+            
+            print(f"Available PRISM variables: {list(available_vars)}")
+            print(f"Configured target variables: {target_vars}")
+            
+            if not set(target_vars).issubset(available_vars):
+                print(f"Warning: Some configured target variables are not available in the data directory.")
+                print(f"Consider using only these variables: {list(available_vars)}")
+            
             raise ValueError("No valid dates found with both MERRA-2 and PRISM files.")
         
         dates = sorted(valid_dates)
@@ -407,24 +442,22 @@ def create_dataloaders(
         print("Attempting to find valid dates...")
         
         # Try to find valid dates automatically
-        merra2_files = glob.glob(os.path.join(merra2_dir, "MERRA2_400.statD_2d_slv_Nx.*.nc4.nc4"))
+        merra2_files = glob.glob(os.path.join(merra2_dir, "MERRA2_400.statD_2d_slv_Nx.*.nc4"))
         available_dates = set()
         for f in merra2_files:
             # Extract date from filename
-            match = re.search(r'MERRA2_400\.statD_2d_slv_Nx\.(\d{8})\.nc4\.nc4', os.path.basename(f))
+            match = re.search(r'MERRA2_400\.statD_2d_slv_Nx\.(\d{8})\.nc4', os.path.basename(f))
             if match:
                 available_dates.add(match.group(1))
         
         # Filter to dates that have PRISM files for all variables
         valid_dates = []
         for date in available_dates:
-            year = date[:4]
-            month = date[4:6]
-            day = date[6:8]
-            
+            # Check if all required PRISM variables exist for this date
             all_prism_vars_exist = True
             for var in target_vars:
-                prism_pattern = os.path.join(prism_dir, f"prism_{var}_us_*_{year}{month}{day}.zip")
+                # Look for files exactly matching prism_<var>_us_25m_YYYYMMDD.zip
+                prism_pattern = os.path.join(prism_dir, f"prism_{var}_us_25m_{date}.zip")
                 if not glob.glob(prism_pattern):
                     all_prism_vars_exist = False
                     break
@@ -433,6 +466,37 @@ def create_dataloaders(
                 valid_dates.append(date)
         
         if not valid_dates:
+            # Print debugging information
+            print("Error: No valid dates found with both MERRA-2 and PRISM files, even after scanning.")
+            print("Available MERRA-2 files:")
+            for f in merra2_files:
+                print(f"  - {os.path.basename(f)}")
+            
+            print(f"Available PRISM files:")
+            for f in glob.glob(os.path.join(prism_dir, "prism_*.zip")):
+                print(f"  - {os.path.basename(f)}")
+            
+            # Suggest alternative target variables
+            prism_var_pattern = re.compile(r'prism_([^_]+)_us_25m_\d{8}\.zip')
+            available_vars = set()
+            for f in glob.glob(os.path.join(prism_dir, "prism_*_us_25m_*.zip")):
+                match = prism_var_pattern.search(os.path.basename(f))
+                if match:
+                    available_vars.add(match.group(1))
+            
+            if available_vars:
+                print(f"Available PRISM variables: {list(available_vars)}")
+                print(f"Consider using only these variables: {list(available_vars)}")
+                
+                # See if we can find dates with at least one variable
+                if len(available_vars) > 0:
+                    var = next(iter(available_vars))
+                    print(f"Checking for dates with variable: {var}")
+                    for date in available_dates:
+                        prism_pattern = os.path.join(prism_dir, f"prism_{var}_us_25m_{date}.zip")
+                        if glob.glob(prism_pattern):
+                            print(f"Date {date} has {var} data")
+            
             raise ValueError("No valid dates found with both MERRA-2 and PRISM files, even after scanning.")
         
         print(f"Found {len(valid_dates)} valid dates: {valid_dates}")
