@@ -12,12 +12,14 @@ This project implements a transformer-based downscaling approach to increase the
 - Integration of terrain information through DEM data
 - Configurable model architecture and training parameters
 - Mixed precision training for efficiency
-- Optimized for Mac M1/M2 using MPS backend
+- Platform-specific optimizations for Mac (CPU) and Linux (GPU)
+- Memory-efficient training with frozen encoder backbone
+- Robust NaN detection and handling during training
 - Comprehensive logging with TensorBoard and Weights & Biases
 
 ## Requirements
 
-- Python 3.8
+- Python 3.8+
 - PyTorch 2.0+
 - PyTorch Lightning
 - Hugging Face Transformers
@@ -98,114 +100,67 @@ Key configuration sections include:
 
 ### Memory Optimization
 
-For Mac M1/M2 users, the configuration is already optimized with:
-- Reduced hidden dimension (128)
-- Smaller batch size (1)
-- MPS backend for GPU acceleration
-- Smaller patch size (32)
+The project includes memory optimization strategies:
 
-For systems with more memory, you can increase these values for better performance.
+- **Memory-efficient training** with frozen Prithvi backbone
+- Reduced hidden dimension (16-32)
+- Smaller batch size with gradient accumulation
+- Mixed precision training (16-bit)
+- Gradient checkpointing for memory efficiency
+- NaN detection and handling for training stability
 
 ## Running Scripts
 
-### Consolidated Script (Recommended)
+### Platform-Specific Training Scripts
 
-The project provides a single consolidated script `prithvi.sh` that combines all functionality and automatically detects your hardware platform:
-
-```bash
-# Show available commands and options
-./prithvi.sh --help
-
-# Basic training with automatic hardware detection (CUDA/MPS/CPU)
-./prithvi.sh train
-
-# Force using a specific device
-./prithvi.sh train --device cuda    # Force NVIDIA GPU
-./prithvi.sh train --device mps     # Force Mac GPU
-./prithvi.sh train --device cpu     # Force CPU
-
-# Data exploration
-./prithvi.sh explore
-
-# Training with Weights & Biases
-./prithvi.sh train --wandb
-
-# Resume training from a checkpoint with W&B
-./prithvi.sh train --wandb --resume logs/path/to/checkpoint.ckpt
-
-# Training on a cluster
-./prithvi.sh cluster
-```
-
-This consolidated script also handles environment setup:
-```bash
-# Setup conda environment if needed and run training
-./prithvi.sh train --install
-```
-
-### Cross-Platform Support
-
-The script automatically detects and configures for different hardware:
-
-- **Linux with NVIDIA GPU**: 
-  - Uses CUDA acceleration
-  - Enables mixed precision for faster training
-  - Increases batch size for better GPU utilization
-
-- **macOS with M1/M2**:
-  - Uses MPS acceleration
-  - Optimizes memory usage with `PYTORCH_MPS_HIGH_WATERMARK_RATIO`
-  - Maintains smaller batch size to avoid memory issues
-
-- **Any platform without GPU**:
-  - Falls back to CPU computation
-  - Adjusts settings for CPU efficiency
-
-### Individual Scripts
-
-The project also includes several specialized shell scripts if needed:
+The project provides platform-specific training scripts:
 
 ```bash
-# Explore and visualize the input data
-./explore_data.sh
+# For Linux systems with NVIDIA GPUs - standard training
+./train_linux.sh
 
-# Basic training script with memory optimization for Mac
-./train.sh
+# For Linux systems with NVIDIA GPUs - memory-efficient training
+./train_linux_memory_efficient.sh
 
-# Full setup and training (creates conda env if needed)
-./run.sh
-
-# Training with Weights & Biases tracking and custom parameters
-./train_wandb.sh [options]
-
-# Cluster training with SLURM integration
-./cluster_train.sh
+# For Mac systems (optimized for CPU)
+./train_mac.sh
 ```
 
-The `train_wandb.sh` script provides additional options:
-```
-Options:
-  --cluster           Run in cluster mode (configures for GPU)
-  --resume PATH       Resume from checkpoint PATH
-  --entity NAME       Set wandb entity (username or team name)
-  --project NAME      Set wandb project name
-  --name NAME         Set run name in wandb
-  --epochs N          Set number of epochs
-  --batch N           Set batch size
-  --help              Show this help message
-```
+### Memory-Efficient Training
 
-You can also run Python directly:
+The memory-efficient training script is recommended for most use cases:
 
 ```bash
-python src/main.py
+# Run memory-efficient training on Linux
+./train_linux_memory_efficient.sh
 ```
 
-This will:
-1. Load and preprocess the data
-2. Create and initialize the model
-3. Train the model with the configured parameters
-4. Save checkpoints and logs
+This script:
+- Freezes the Prithvi backbone to reduce memory usage
+- Applies aggressive memory optimizations
+- Uses gradient checkpointing and accumulation
+- Includes NaN detection and handling
+- Automatically enables Weights & Biases logging
+- Pre-validates data for NaN values before training
+- Configures optimal training parameters
+
+### Direct Python Execution
+
+You can also run Python directly with custom arguments:
+
+```bash
+# Basic training
+python src/main.py --config src/config/config.yaml --mode train
+
+# Memory-efficient training
+python src/main.py --config src/config/config.yaml --mode train --memory_efficient
+
+# GPU cluster mode
+python src/main.py --config src/config/config.yaml --mode train --cluster
+
+# Enable NaN detection
+python src/main.py --config src/config/config.yaml --mode train --detect_anomaly
+```
 
 ## Monitoring
 
@@ -217,29 +172,45 @@ Training progress can be monitored using:
   ```
 
 - Weights & Biases (if enabled):
-  Monitor at https://wandb.ai/YOUR_USERNAME/merra2-prism-downscaling
+  Monitor at https://wandb.ai/YOUR_USERNAME/prithvi-downscaling
 
 ## Model Outputs
 
 The trained model will produce:
 - Checkpoints in the `logs/` directory
 - Performance metrics (MAE, MSE, RMSE)
+- Per-variable metrics for temperature and precipitation
+- NaN occurrence tracking
 - Visualization plots (if enabled)
+
+## NaN Handling and Debugging
+
+The model includes robust NaN detection and handling:
+
+- Automatic NaN detection in inputs, outputs, and losses
+- NaN replacement to prevent training failures
+- Detailed logging of tensor statistics when NaNs are detected
+- Reduced frequency NaN warnings to avoid console flooding
+- PyTorch anomaly detection for better debugging
+- W&B logging of NaN occurrence counts
 
 ## Troubleshooting
 
 ### Memory Issues
 
 If you encounter memory errors:
-1. Reduce batch size in config.yaml
-2. Decrease hidden_dim in config.yaml
-3. Reduce patch_size in config.yaml
-4. Use mixed precision training (set precision to 16)
+1. Use the memory-efficient training script (`train_linux_memory_efficient.sh`)
+2. Reduce batch size further in config.yaml
+3. Decrease hidden_dim in config.yaml
+4. Reduce patch_size in config.yaml
 
-For MPS backend memory issues on Mac:
-```bash
-export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.7
-```
+### NaN Issues
+
+If you encounter NaN values during training:
+1. Check your input data for NaN values
+2. Reduce learning rate in config.yaml
+3. Enable robust NaN detection with `--detect_anomaly`
+4. Try setting `replace_nan_with_mean: True` in your config
 
 ### GDAL Installation Issues
 
@@ -247,11 +218,21 @@ If GDAL installation fails:
 1. Install via conda first: `conda install -c conda-forge gdal`
 2. Then install other requirements: `pip install -r requirements.txt`
 
+## Version History
+
+### v1.1.0
+- Added memory-efficient training with frozen backbone
+- Implemented robust NaN detection and handling
+- Added Weights & Biases integration for experiment tracking
+- Optimized training scripts for platform-specific execution
+- Streamlined codebase by removing unnecessary scripts
+- Fixed data loading and preprocessing issues
+
+### v1.0.0
+- Initial implementation of downscaling model
+- Basic data processing functionality
+- PyTorch Lightning integration
+- Multi-variable prediction
+
 ## License
-
-[Specify your license here]
-
-## Acknowledgments
-
-- IBM and NASA for the Prithvi-WxC model
-- MERRA2 and PRISM for climate data 
+[Your License Here] 
