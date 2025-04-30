@@ -12,6 +12,67 @@ from src.trainers import DownscalingModule
 from src.visualizations import visualize_predictions
 
 
+def get_gpu_info():
+    """Get GPU information."""
+    gpu_info = {
+        'available': torch.cuda.is_available(),
+        'count': torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        'names': [],
+        'total_memory_gb': 0.0
+    }
+    
+    if gpu_info['available']:
+        for i in range(gpu_info['count']):
+            gpu_info['names'].append(torch.cuda.get_device_name(i))
+            gpu_info['total_memory_gb'] += torch.cuda.get_device_properties(i).total_memory / (1024**3)
+    
+    return gpu_info
+
+
+def configure_multi_gpu(config, num_gpus):
+    """Configure training for multi-GPU setup.
+    
+    Args:
+        config: Configuration dictionary.
+        num_gpus: Number of GPUs available.
+        
+    Returns:
+        Updated configuration dictionary.
+    """
+    # Configure for multi-GPU training
+    config['hardware']['accelerator'] = 'gpu'
+    config['hardware']['devices'] = num_gpus
+    config['model']['device'] = 'cuda'
+    
+    # Set distributed training strategy
+    config['cluster']['enabled'] = True
+    config['cluster']['strategy'] = 'ddp'  # Use DistributedDataParallel
+    config['cluster']['sync_batchnorm'] = True
+    
+    # Scale batch size and learning rate for multi-GPU training
+    # Keep per-GPU batch size small for memory efficiency
+    per_gpu_batch_size = max(1, min(4, config['training']['batch_size']))
+    
+    # Calculate effective batch size
+    effective_batch_size = per_gpu_batch_size * num_gpus * config['training'].get('accumulate_grad_batches', 1)
+    
+    # Scale learning rate using square root scaling rule: lr = base_lr * sqrt(batch_size / base_batch_size)
+    base_lr = config['training']['optimizer']['lr']
+    base_batch_size = 1
+    scaled_lr = base_lr * (effective_batch_size / base_batch_size) ** 0.5
+    
+    # Update config with the new values
+    config['training']['batch_size'] = per_gpu_batch_size
+    config['training']['optimizer']['lr'] = scaled_lr
+    config['training']['precision'] = 16  # Use mixed precision for efficiency
+    
+    # Set data loader settings for efficiency
+    config['hardware']['num_workers'] = min(4, os.cpu_count() // num_gpus)
+    config['hardware']['pin_memory'] = True
+    
+    return config
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="MERRA-2 to PRISM Downscaling Pipeline")
@@ -46,10 +107,15 @@ def parse_args():
         help="Enable PyTorch anomaly detection to help debug NaN values"
     )
     
+    parser.add_argument(
+        "--multi_gpu", action="store_true",
+        help="Enable multi-GPU training with automatic configuration"
+    )
+    
     return parser.parse_args()
 
 
-def train(config, cluster_mode=False, memory_efficient=False, detect_anomaly=False):
+def train(config, cluster_mode=False, memory_efficient=False, detect_anomaly=False, multi_gpu=False):
     """Train the model.
     
     Args:
@@ -57,6 +123,7 @@ def train(config, cluster_mode=False, memory_efficient=False, detect_anomaly=Fal
         cluster_mode: Whether to use cluster-specific configurations.
         memory_efficient: Whether to use memory-efficient settings.
         detect_anomaly: Whether to enable PyTorch anomaly detection for debugging NaNs.
+        multi_gpu: Whether to automatically configure for multi-GPU training.
     """
     # Empty CUDA cache before starting if available
     if torch.cuda.is_available():
@@ -72,6 +139,26 @@ def train(config, cluster_mode=False, memory_efficient=False, detect_anomaly=Fal
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         print("Set PyTorch to deterministic mode for better debugging")
+    
+    # Configure for multi-GPU if requested
+    if multi_gpu:
+        gpu_info = get_gpu_info()
+        if gpu_info['available'] and gpu_info['count'] > 1:
+            print(f"Multi-GPU mode enabled with {gpu_info['count']} GPUs")
+            print(f"GPUs available: {', '.join(gpu_info['names'])}")
+            print(f"Total GPU memory: {gpu_info['total_memory_gb']:.1f} GB")
+            
+            # Configure for multi-GPU training
+            config = configure_multi_gpu(config, gpu_info['count'])
+            
+            # Set cluster mode to True since we're using multiple GPUs
+            cluster_mode = True
+            
+            print(f"Configured for {gpu_info['count']} GPUs with batch size {config['training']['batch_size']} per GPU")
+            print(f"Effective batch size: {config['training']['batch_size'] * gpu_info['count'] * config['training'].get('accumulate_grad_batches', 1)}")
+            print(f"Scaled learning rate: {config['training']['optimizer']['lr']}")
+        else:
+            print(f"Multi-GPU mode requested but only {gpu_info['count']} GPUs available. Using single GPU.")
     
     # Update configuration for cluster if needed
     if cluster_mode:
@@ -339,7 +426,7 @@ def main():
     
     # Run selected mode
     if args.mode == "train":
-        model, trainer = train(config, cluster_mode=args.cluster, memory_efficient=args.memory_efficient, detect_anomaly=args.detect_anomaly)
+        model, trainer = train(config, cluster_mode=args.cluster, memory_efficient=args.memory_efficient, detect_anomaly=args.detect_anomaly, multi_gpu=args.multi_gpu)
     elif args.mode == "test":
         if args.checkpoint is None:
             raise ValueError("Checkpoint path must be provided for test mode")

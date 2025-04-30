@@ -5,7 +5,7 @@ import random
 import re  # Add missing import for regex
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import xarray as xr
 from typing import Dict, List, Tuple, Optional, Union, Callable, Any
 from pathlib import Path
@@ -552,29 +552,54 @@ def create_dataloaders(
     val_indices = indices[train_size:train_size + val_size]
     test_indices = indices[train_size + val_size:]
     
-    # Create data loaders
+    # Create subsets
+    train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
+    val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
+    test_dataset = torch.utils.data.Subset(full_dataset, test_indices)
+    
+    # Check if we're using multiple GPUs
+    is_distributed = config.get('cluster', {}).get('enabled', False) and \
+                    config['hardware'].get('accelerator', 'cpu') == 'gpu' and \
+                    (config['hardware'].get('devices', 1) > 1 or config['hardware'].get('devices') == -1)
+    
+    # Set up samplers for distributed training
+    train_sampler = DistributedSampler(train_dataset) if is_distributed else None
+    val_sampler = DistributedSampler(val_dataset, shuffle=False) if is_distributed else None
+    test_sampler = DistributedSampler(test_dataset, shuffle=False) if is_distributed else None
+    
+    # Configure dataloader shuffle properly for distributed training
+    # When using DistributedSampler, don't shuffle in the DataLoader as the sampler handles it
+    shuffle_train = train_sampler is None
+    
+    # Create data loaders with proper samplers for distributed training
     train_loader = DataLoader(
-        torch.utils.data.Subset(full_dataset, train_indices),
+        train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle_train,
+        sampler=train_sampler,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=config['hardware'].get('pin_memory', False),
+        persistent_workers=num_workers > 0
     )
     
     val_loader = DataLoader(
-        torch.utils.data.Subset(full_dataset, val_indices),
+        val_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=val_sampler,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=config['hardware'].get('pin_memory', False),
+        persistent_workers=num_workers > 0
     )
     
     test_loader = DataLoader(
-        torch.utils.data.Subset(full_dataset, test_indices),
+        test_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=test_sampler,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=config['hardware'].get('pin_memory', False),
+        persistent_workers=num_workers > 0
     )
     
     return train_loader, val_loader, test_loader 

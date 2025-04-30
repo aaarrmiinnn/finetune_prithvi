@@ -122,6 +122,9 @@ The project provides platform-specific training scripts:
 # For Linux systems with NVIDIA GPUs - memory-efficient training
 ./train_linux_memory_efficient.sh
 
+# For Linux systems with NVIDIA GPUs - multi-GPU distributed training (NEW)
+./train_linux_multi_gpu.sh
+
 # For Mac systems (optimized for CPU)
 ./train_mac.sh
 ```
@@ -143,6 +146,31 @@ This script:
 - Automatically enables Weights & Biases logging
 - Pre-validates data for NaN values before training
 - Configures optimal training parameters
+
+### Multi-GPU Distributed Training
+
+For systems with multiple GPUs, the multi-GPU training script enables distributed training:
+
+```bash
+# Run distributed training across all available GPUs
+./train_linux_multi_gpu.sh
+```
+
+This script:
+- Automatically detects and uses all available GPUs
+- Configures distributed data parallelism (DDP)
+- Scales batch size and learning rate appropriately
+- Synchronizes batch normalization across devices
+- Distributes data efficiently across GPUs
+- Provides significant training speed improvements
+- Enables training with larger effective batch sizes
+
+For fine-grained control, you can also use the Python command directly:
+
+```bash
+# Enable multi-GPU training with the --multi_gpu flag
+python src/main.py --config src/config/config.yaml --mode train --multi_gpu
+```
 
 ### Direct Python Execution
 
