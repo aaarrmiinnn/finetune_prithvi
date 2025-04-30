@@ -22,48 +22,30 @@ mkdir -p cache
 CONFIG_FILE="src/config/config.yaml"
 TEMP_CONFIG_FILE="src/config/config_memory_efficient.yaml"
 
-# Create a copy of the config file
-cp $CONFIG_FILE $TEMP_CONFIG_FILE
-
 # Check if CUDA is available using PyTorch
 CUDA_AVAILABLE=$(python -c "import torch; print(torch.cuda.is_available())")
 
 if [ "$CUDA_AVAILABLE" = "True" ]; then
     echo "PyTorch CUDA is available, configuring for memory-efficient GPU training"
     
-    # Hardware and precision settings
-    sed -i 's/accelerator: "cpu"/accelerator: "gpu"/' $TEMP_CONFIG_FILE
-    sed -i 's/devices: 1/devices: 1/' $TEMP_CONFIG_FILE
-    sed -i 's/precision: 32/precision: 16/' $TEMP_CONFIG_FILE
-    sed -i 's/device: "cpu"/device: "cuda"/' $TEMP_CONFIG_FILE
-    
-    # Memory efficiency settings
-    sed -i 's/batch_size: [0-9]*/batch_size: 1/' $TEMP_CONFIG_FILE
-    sed -i 's/accumulate_grad_batches: [0-9]*/accumulate_grad_batches: 16/' $TEMP_CONFIG_FILE
-    sed -i 's/num_workers: [0-9]*/num_workers: 2/' $TEMP_CONFIG_FILE
-    sed -i 's/pin_memory: false/pin_memory: true/' $TEMP_CONFIG_FILE
-    
-    # Model size reduction settings
-    sed -i 's/hidden_dim: [0-9]*/hidden_dim: 16/' $TEMP_CONFIG_FILE
-    sed -i 's/patch_size: [0-9]*/patch_size: 8/' $TEMP_CONFIG_FILE
-    
-    # Training settings - increase to 100 epochs
-    sed -i 's/epochs: [0-9]*/epochs: 100/' $TEMP_CONFIG_FILE
-    
-    # Gradient checkpointing to save memory
-    echo "gradient_checkpointing: true" >> $TEMP_CONFIG_FILE
-    
-    # Cluster settings
-    sed -i 's/enabled: false/enabled: true/' $TEMP_CONFIG_FILE
-    sed -i 's/strategy: "ddp"/strategy: "auto"/' $TEMP_CONFIG_FILE
+    # Use Python to update the config file safely (instead of multiple sed commands)
+    python update_config.py --input $CONFIG_FILE --output $TEMP_CONFIG_FILE
     
     # Print CUDA info for debugging
     python -c "import torch; print('CUDA Devices:', torch.cuda.device_count()); print('Current Device:', torch.cuda.current_device()); print('Device Name:', torch.cuda.get_device_name(0)); print('Memory Allocated:', torch.cuda.memory_allocated(0)/1024**3, 'GB'); print('Memory Reserved:', torch.cuda.memory_reserved(0)/1024**3, 'GB'); print('Max Memory Allocated:', torch.cuda.max_memory_allocated(0)/1024**3, 'GB')"
 else
     echo "PyTorch CUDA not available, configuring for CPU training"
-    sed -i 's/accelerator: "gpu"/accelerator: "cpu"/' $TEMP_CONFIG_FILE
-    sed -i 's/device: "cuda"/device: "cpu"/' $TEMP_CONFIG_FILE
-    sed -i 's/epochs: [0-9]*/epochs: 100/' $TEMP_CONFIG_FILE
+    # Create a CPU-focused config
+    python -c "
+import yaml
+with open('$CONFIG_FILE', 'r') as f:
+    config = yaml.safe_load(f)
+config['hardware']['accelerator'] = 'cpu'
+config['model']['device'] = 'cpu'
+config['training']['epochs'] = 100
+with open('$TEMP_CONFIG_FILE', 'w') as f:
+    yaml.dump(config, f, default_flow_style=False)
+"
 fi
 
 # Empty GPU cache before starting
