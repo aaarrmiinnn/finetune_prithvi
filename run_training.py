@@ -21,6 +21,29 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+def check_cuda_availability():
+    """Check if CUDA is available using PyTorch."""
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+        if cuda_available:
+            device_count = torch.cuda.device_count()
+            current_device = torch.cuda.current_device()
+            device_name = torch.cuda.get_device_name(current_device)
+            logger.info(f"PyTorch CUDA is available: {cuda_available}")
+            logger.info(f"CUDA Devices: {device_count}")
+            logger.info(f"Current Device: {current_device}")
+            logger.info(f"Device Name: {device_name}")
+        else:
+            logger.warning("PyTorch CUDA is not available")
+        return cuda_available
+    except ImportError:
+        logger.error("PyTorch not installed or failed to import")
+        return False
+    except Exception as e:
+        logger.error(f"Error checking CUDA availability: {str(e)}")
+        return False
+
 def run_training():
     """Run the appropriate training script based on platform."""
     logger.info("Starting training with NaN-resistant modifications")
@@ -42,10 +65,10 @@ def run_training():
         script_path = "./train_linux.sh"
         logger.info(f"Detected {system}, using train_linux.sh")
         
-        # Check if nvcc is available (for CUDA)
-        nvcc_available = shutil.which("nvcc") is not None
-        if not nvcc_available:
-            logger.warning("CUDA nvcc not found in PATH. Training will continue but may not use GPU acceleration.")
+        # Check if CUDA is available using PyTorch
+        cuda_available = check_cuda_availability()
+        if not cuda_available:
+            logger.warning("CUDA not available via PyTorch. Training will continue but may not use GPU acceleration.")
             logger.info("Setting CUDA_VISIBLE_DEVICES= to disable GPU usage")
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
     
@@ -84,6 +107,11 @@ def run_training():
             if "find_unused_parameters" in line and "unexpected keyword argument" in line:
                 logger.error("PyTorch Lightning version incompatibility detected: 'find_unused_parameters' error")
                 logger.info("Please update the config.yaml file to remove this parameter or upgrade PyTorch Lightning")
+                
+            # Check for GPU usage warnings
+            if "GPU available but not used" in line:
+                logger.error("GPU is available but not being used!")
+                logger.info("Check your configuration to ensure GPU acceleration is properly enabled")
                 
             # Check for device mismatch issues
             if "Expected all tensors to be on the same device" in line:
@@ -132,50 +160,69 @@ def fix_device_mismatch():
         shutil.copy(config_path, backup_path)
         logger.info(f"Created backup of original config at {backup_path}")
     
+    # Check for CUDA availability
+    cuda_available = check_cuda_availability()
+    
     # Read the config file
     with open(config_path, 'r') as f:
         lines = f.readlines()
     
     # Flag to track if we're in the model section
     in_model_section = False
+    in_hardware_section = False
+    in_cluster_section = False
     
     # Create fixed config
     with open(fixed_path, 'w') as f:
         for line in lines:
-            # Check if we're entering the model section
+            # Check if we're entering different sections
             if line.strip() == "# Model Configuration":
                 in_model_section = True
+                in_hardware_section = False
+                in_cluster_section = False
+            elif line.strip() == "# Hardware":
+                in_hardware_section = True
+                in_model_section = False
+                in_cluster_section = False
+            elif line.strip() == "# Cluster Settings (for future use)":
+                in_cluster_section = True
+                in_model_section = False
+                in_hardware_section = False
             elif line.strip().startswith("# ") and "Configuration" in line.strip():
                 in_model_section = False
-                
-            # Find the hardware accelerator line
-            if "accelerator:" in line and not line.strip().startswith("#"):
-                accelerator = line.split('"')[1] if '"' in line else line.split("'")[1] if "'" in line else None
-                
-                # Force the line to be consistent
-                if accelerator == "gpu":
+                in_hardware_section = False
+                in_cluster_section = False
+            
+            # Handle specific settings based on CUDA availability
+            if cuda_available:
+                # If CUDA is available, set to use GPU
+                if in_hardware_section and "accelerator:" in line:
                     f.write('  accelerator: "gpu"\n')
-                    using_gpu = True
-                else:
-                    f.write('  accelerator: "cpu"\n')
-                    using_gpu = False
-                continue
-                
-            # Fix model device setting if we're in the model section
-            if in_model_section and "device:" in line and not line.strip().startswith("#"):
-                # Set device based on accelerator
-                if 'using_gpu' in locals() and using_gpu:
+                    continue
+                elif in_model_section and "device:" in line:
                     f.write('  device: "cuda"\n')
-                else:
+                    continue
+                elif in_cluster_section and "enabled:" in line:
+                    f.write('  enabled: true\n')
+                    continue
+                elif in_hardware_section and "devices:" in line:
+                    f.write('  devices: 1\n')
+                    continue
+            else:
+                # If CUDA is not available, ensure CPU is used
+                if in_hardware_section and "accelerator:" in line:
+                    f.write('  accelerator: "cpu"\n')
+                    continue
+                elif in_model_section and "device:" in line:
                     f.write('  device: "cpu"\n')
-                continue
-                
-            # Write the original line
+                    continue
+            
+            # Write the original line for other settings
             f.write(line)
     
     logger.info(f"Created fixed config file at {fixed_path}")
     logger.info(f"Please use this config file for your next training run")
-    logger.info(f"Example: python src/main.py --config {fixed_path} --mode train")
+    logger.info(f"Example: python src/main.py --config {fixed_path} --mode train --cluster")
 
 if __name__ == "__main__":
     run_training() 
