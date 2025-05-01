@@ -4,6 +4,7 @@
 # Set environment variables for better GPU performance
 export CUDA_VISIBLE_DEVICES=0
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 # Add the current directory to Python path to fix module imports
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
@@ -30,45 +31,119 @@ CUDA_AVAILABLE=$(python -c "import torch; print(torch.cuda.is_available())")
 if [ "$CUDA_AVAILABLE" = "True" ]; then
     echo "PyTorch CUDA is available, configuring for GPU training"
     # Update the hardware and cluster settings for GPU
-    sed -i 's/accelerator: "cpu"/accelerator: "gpu"/' $TEMP_CONFIG_FILE
-    sed -i 's/devices: 1/devices: 1/' $TEMP_CONFIG_FILE
-    sed -i 's/precision: 32/precision: 16/' $TEMP_CONFIG_FILE
-    
-    # Don't comment out find_unused_parameters, but set it to false
-    sed -i 's/find_unused_parameters: false/find_unused_parameters: false/' $TEMP_CONFIG_FILE
-    
-    sed -i 's/strategy: "ddp"/strategy: "auto"/' $TEMP_CONFIG_FILE
-    
-    # Most importantly: Update the device setting for model to match accelerator
-    sed -i 's/device: "cpu"/device: "cuda"/' $TEMP_CONFIG_FILE
-    
-    # Enable pin_memory for faster data transfer to GPU
-    sed -i 's/pin_memory: false/pin_memory: true/' $TEMP_CONFIG_FILE
-    
-    # Increase number of workers for better GPU utilization
-    sed -i 's/num_workers: 0/num_workers: 2/' $TEMP_CONFIG_FILE
-    
-    # Force cluster settings to be enabled with GPU
-    sed -i 's/enabled: false/enabled: true/' $TEMP_CONFIG_FILE
+    python -c "
+import yaml
+with open('$TEMP_CONFIG_FILE', 'r') as f:
+    config = yaml.safe_load(f)
+
+# GPU hardware settings
+config['hardware']['accelerator'] = 'gpu'
+config['hardware']['devices'] = 1
+config['hardware']['pin_memory'] = True
+config['hardware']['num_workers'] = 2
+config['model']['device'] = 'cuda'
+
+# Training settings
+config['training']['precision'] = 16
+config['training']['batch_size'] = 4
+config['training']['accumulate_grad_batches'] = 4
+config['model']['freeze_encoder'] = True  # Keep backbone frozen for stability
+
+# Cluster settings
+config['cluster']['enabled'] = True
+config['cluster']['strategy'] = 'auto'
+config['cluster']['find_unused_parameters'] = False
+
+# Enable Weights & Biases logging
+config['logging']['wandb'] = True
+config['logging']['wandb_project'] = 'prithvi-downscaling'
+config['logging']['wandb_tags'] = ['single-gpu', 'frozen-backbone']
+config['logging']['wandb_notes'] = 'Single GPU training run with Weights & Biases tracking'
+
+with open('$TEMP_CONFIG_FILE', 'w') as f:
+    yaml.dump(config, f, default_flow_style=False)
+"
     
     # Print CUDA info for debugging
-    python -c "import torch; print('CUDA Devices:', torch.cuda.device_count()); print('Current Device:', torch.cuda.current_device()); print('Device Name:', torch.cuda.get_device_name(0))"
+    python -c "
+import torch
+print(f'CUDA Devices: {torch.cuda.device_count()}')
+print(f'Current Device: {torch.cuda.current_device()}')
+print(f'Device Name: {torch.cuda.get_device_name(0)}')
+print(f'Device Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB')
+"
 else
     echo "PyTorch CUDA not available, configuring for CPU training"
     # Keep accelerator as CPU and make sure model device also uses CPU
-    sed -i 's/accelerator: "gpu"/accelerator: "cpu"/' $TEMP_CONFIG_FILE
-    sed -i 's/device: "cuda"/device: "cpu"/' $TEMP_CONFIG_FILE
-    
-    # Don't comment out find_unused_parameters, but set it to false
-    sed -i 's/find_unused_parameters: false/find_unused_parameters: false/' $TEMP_CONFIG_FILE
-    
-    sed -i 's/strategy: "ddp"/strategy: "auto"/' $TEMP_CONFIG_FILE
-    
-    # Disable pin_memory for CPU training
-    sed -i 's/pin_memory: true/pin_memory: false/' $TEMP_CONFIG_FILE
+    python -c "
+import yaml
+with open('$TEMP_CONFIG_FILE', 'r') as f:
+    config = yaml.safe_load(f)
+
+# CPU hardware settings
+config['hardware']['accelerator'] = 'cpu'
+config['hardware']['devices'] = 1
+config['hardware']['pin_memory'] = False
+config['hardware']['num_workers'] = 0
+config['model']['device'] = 'cpu'
+
+# Training settings (reduced for CPU)
+config['training']['precision'] = 32
+config['training']['batch_size'] = 1
+config['training']['accumulate_grad_batches'] = 4
+config['model']['freeze_encoder'] = True
+
+# Cluster settings
+config['cluster']['enabled'] = False
+config['cluster']['strategy'] = 'auto'
+config['cluster']['find_unused_parameters'] = False
+
+# Enable Weights & Biases logging
+config['logging']['wandb'] = True
+config['logging']['wandb_project'] = 'prithvi-downscaling'
+config['logging']['wandb_tags'] = ['cpu', 'debugging']
+config['logging']['wandb_notes'] = 'CPU training run with Weights & Biases tracking'
+
+with open('$TEMP_CONFIG_FILE', 'w') as f:
+    yaml.dump(config, f, default_flow_style=False)
+"
 fi
 
-# Explicitly set cluster mode to ensure GPU use
+# Validate cache files and remove corrupted ones
+echo "Validating cache files to prevent EOFError..."
+python -c "
+import os
+import numpy as np
+import glob
+
+cache_dir = 'cache'
+cache_files = glob.glob(os.path.join(cache_dir, 'merra2_prism_*.npz'))
+print(f'Checking {len(cache_files)} cache files...')
+
+for cache_file in cache_files:
+    try:
+        # Try to load the file to see if it's valid
+        data = np.load(cache_file, allow_pickle=True)
+        # Verify key content exists
+        if 'patches' not in data:
+            print(f'Warning: Missing data in {cache_file}, removing...')
+            os.remove(cache_file)
+            continue
+        
+        # Try to access the data to ensure it's readable
+        _ = data['patches'].tolist()
+        print(f'✓ Valid cache file: {os.path.basename(cache_file)}')
+    except (EOFError, KeyError, ValueError, Exception) as e:
+        # If any error occurs, remove the file
+        print(f'Found corrupted cache file {cache_file}: {str(e)}')
+        print(f'Removing {cache_file}...')
+        os.remove(cache_file)
+"
+
+# Empty GPU cache before starting
+python -c "import torch; torch.cuda.empty_cache() if torch.cuda.is_available() else print('No CUDA available to empty cache')"
+
+# Run with updated config
 echo "Running with --cluster flag to ensure GPU usage"
 python src/main.py \
   --config $TEMP_CONFIG_FILE \
