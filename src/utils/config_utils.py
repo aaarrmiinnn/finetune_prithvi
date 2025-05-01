@@ -33,6 +33,14 @@ def setup_paths(config: Dict[str, Any]) -> Dict[str, Any]:
     # Create log directory if it doesn't exist
     os.makedirs(config['logging']['save_dir'], exist_ok=True)
     
+    # Create model cache directory if it doesn't exist
+    model_cache_dir = config['model'].get('model_cache_dir', config['model'].get('cache_dir', 'models/cache'))
+    os.makedirs(model_cache_dir, exist_ok=True)
+    
+    # Ensure model_cache_dir is set in the config
+    if 'model_cache_dir' not in config['model']:
+        config['model']['model_cache_dir'] = model_cache_dir
+    
     # Validate data paths
     for path_key in ['merra2_dir', 'prism_dir', 'dem_dir']:
         path = config['data'][path_key]
@@ -64,4 +72,10 @@ def get_experiment_name(config: Dict[str, Any]) -> str:
     batch_size = config['training']['batch_size']
     lr = config['training']['optimizer']['lr']
     
-    return f"{model_name}_{freeze_str}_bs{batch_size}_lr{lr:.1e}" 
+    # Include device type in name (from hardware.device or model.device for backward compatibility)
+    device = config.get('hardware', {}).get('device', config['model'].get('device', 'cpu'))
+    
+    # Include precision information
+    precision = config['training'].get('precision', 32)
+    
+    return f"{model_name}_{freeze_str}_bs{batch_size}_lr{lr:.1e}_{device}_p{precision}" 

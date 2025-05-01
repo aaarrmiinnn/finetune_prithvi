@@ -337,8 +337,10 @@ def create_model(config: Dict[str, Any]) -> PrithviDownscaler:
         output_channels=len(data_config['target_vars']),
         hidden_dim=model_config['hidden_dim'],
         prithvi_checkpoint=model_config['prithvi_checkpoint'],
-        cache_dir=model_config['cache_dir'],
-        device=model_config['device'],
+        # Use model_cache_dir if available, fall back to cache_dir for backward compatibility
+        cache_dir=model_config.get('model_cache_dir', model_config.get('cache_dir', 'models/cache')),
+        # Use hardware.device if available, fall back to model.device for backward compatibility
+        device=config.get('hardware', {}).get('device', model_config.get('device', 'cpu')),
         use_pretrained=model_config['use_pretrained'],
         gradient_checkpointing=model_config.get('gradient_checkpointing', False),
         freeze_encoder=model_config.get('freeze_encoder', False)
