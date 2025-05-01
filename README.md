@@ -234,5 +234,50 @@ If GDAL installation fails:
 - PyTorch Lightning integration
 - Multi-variable prediction
 
+## Variable Selection
+
+The model supports training on one or multiple climate variables. By default, it trains a joint model to predict both temperature (tdmean) and precipitation (ppt), but you can also train specialized models for individual variables.
+
+To train with specific variables, use the `train_with_variables.sh` script:
+
+```bash
+# Train both variables together (default)
+./train_with_variables.sh
+
+# Train temperature model only
+./train_with_variables.sh --temperature
+
+# Train precipitation model only
+./train_with_variables.sh --precipitation
+
+# Train with specific variables
+./train_with_variables.sh --variables=tdmean,ppt
+```
+
+For inference with trained models, use the `inference_with_variables.py` script:
+
+```bash
+# Run inference with a model trained on both variables
+python inference_with_variables.py \
+  --checkpoint models/checkpoints/best.ckpt \
+  --variables="tdmean,ppt" \
+  --use-test-data \
+  --visualize
+
+# Run inference with a temperature-only model
+python inference_with_variables.py \
+  --checkpoint models/checkpoints/best.ckpt \
+  --variables="tdmean" \
+  --use-test-data \
+  --visualize
+```
+
+Each configuration is automatically optimized for the selected variables:
+- Temperature models use higher learning rates and MSE-focused loss
+- Precipitation models use lower learning rates and MAE-focused loss
+- Joint models use balanced hyperparameters
+
+This approach allows maximum flexibility while maintaining a single codebase and configuration file.
+
 ## License
 [Your License Here] 

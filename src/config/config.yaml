@@ -7,97 +7,165 @@ data:
   dates: ["20250302"]  # Only use March 2nd data
   spatial_extent: null  # null for whole domain, or [min_lon, min_lat, max_lon, max_lat]
   cache_dir: "cache"
-  patch_size: 16  # Further reduced from 32 to save memory
+  patch_size: 16  # Patch size for input data
   input_vars: ["T2MMAX", "T2MMEAN", "T2MMIN", "TPRECMAX"]
-  target_vars: ["tdmean", "ppt"]  # PRISM variables (mean temperature and precipitation)
-  mask_ratio: 0.0  # Removed masking for debugging
+  # List of all available target variables
+  available_vars: ["tdmean", "ppt"]
+  # Target variables to use for this run (can be one or multiple)
+  target_vars: ["tdmean", "ppt"]
+  mask_ratio: 0.0  # No masking
   train_test_split: [0.7, 0.15, 0.15]  # Train, val, test split
-  debug_mode: true  # Added for debugging
   normalize_inputs: true  # Normalize inputs to [0, 1]
   normalize_targets: true  # Normalize targets to [0, 1]
   normalize_dem: true  # Normalize DEM to [0, 1]
   clip_extreme_values: true  # Clip values outside of [mean-3*std, mean+3*std]
+  debug_mode: false  # Disable debug mode for production
 
 # Model Configuration
 model:
   # Prithvi model configuration
   prithvi_checkpoint: "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M"  # Model name or path
-  cache_dir: "models/cache"  # Directory to cache downloaded models
+  model_cache_dir: "models/cache"  # Directory to cache downloaded models
   use_pretrained: true  # Whether to use pretrained weights
-  device: "cpu"  # Use CPU to avoid MPS memory issues
   freeze_encoder: true  # Freeze the encoder to save memory
   
-  # Architecture configuration
-  hidden_dim: 32  # Further reduced from 64 to save memory
-  
-  # Training configuration
-  learning_rate: 5e-6  # Further reduced for stability
-  weight_decay: 1e-5   # Increased for better regularization
-  scheduler_patience: 5
-  scheduler_factor: 0.5
-  loss_weights:
-    mse: 1.0
-    mae: 1.0
+  # Variable-specific architecture configurations
+  # These will be applied based on the selected target_vars
+  variable_config:
+    # Common configuration (used when training both variables)
+    common:
+      hidden_dim: 48  # Balanced for both variables
+    
+    # Temperature specific settings (applied when only training temperature)
+    temperature:
+      hidden_dim: 64  # Increased from 32 for better temperature prediction
+    
+    # Precipitation specific settings (applied when only training precipitation)
+    precipitation:
+      hidden_dim: 96  # Larger for precipitation which needs more capacity
 
 # Training Configuration
 training:
-  epochs: 5  # Increased epochs for better convergence
-  batch_size: 1  # Reduced to minimum to save memory
+  # Variable-specific training parameters
+  variable_config:
+    # Common configuration (used when training both variables)
+    common:
+      epochs: 8
+      batch_size: 1
+      gradient_clip_val: 0.3
+      accumulate_grad_batches: 4
+      optimizer:
+        lr: 5.0e-6
+        weight_decay: 0.0015
+      scheduler:
+        warmup_epochs: 2
+        min_lr: 1e-7
+        patience: 5
+        factor: 0.4
+    
+    # Temperature specific settings
+    temperature:
+      epochs: 10
+      batch_size: 2
+      gradient_clip_val: 0.5
+      accumulate_grad_batches: 4
+      optimizer:
+        lr: 1.0e-5
+        weight_decay: 0.001
+      scheduler:
+        warmup_epochs: 2
+        min_lr: 1e-7
+        patience: 5
+        factor: 0.5
+    
+    # Precipitation specific settings
+    precipitation:
+      epochs: 15
+      batch_size: 1
+      gradient_clip_val: 0.1
+      accumulate_grad_batches: 8
+      optimizer:
+        lr: 3.0e-6
+        weight_decay: 0.002
+      scheduler:
+        warmup_epochs: 3
+        min_lr: 5e-8
+        patience: 7
+        factor: 0.3
+  
+  # Common training configuration
   max_nan_losses: 5  # Maximum number of NaN losses allowed before stopping
   gradient_clipping: true  # Enable gradient clipping
-  optimizer:
-    name: "AdamW"
-    lr: 5.0e-6  # Reduced learning rate for stability
-    weight_decay: 0.002  # Increased weight decay
-    epsilon: 1e-8  # Epsilon parameter for AdamW optimizer
-  scheduler:
-    name: "cosine"
-    warmup_epochs: 1  # Add warmup for stability
-    min_lr: 1e-7  # Minimum learning rate
-  precision: 32  # Use full precision for debugging
-  gradient_clip_val: 0.1  # Reduced for stability
-  log_every_n_steps: 1  # Log every step
-  val_check_interval: 0.5  # Run validation more frequently
-  save_top_k: 2  # Save top 2 models
+  precision: 16  # Use mixed precision for faster training
+  log_every_n_steps: 10  # Log less frequently for faster training
+  val_check_interval: 0.5  # Run validation frequently
+  save_top_k: 3  # Save top 3 models
   resume_from_checkpoint: null  # Path to checkpoint to resume training
-  debug: true  # Added for debugging
-  accumulate_grad_batches: 4  # Increased to accumulate more gradients
+  debug: false  # Disable debug mode for production
+  
+  # Optimizer base settings
+  optimizer:
+    name: "AdamW"  # AdamW works well for this task
+    epsilon: 1e-8  # Epsilon parameter for AdamW optimizer
+  
+  # Scheduler base settings
+  scheduler:
+    name: "cosine"  # Cosine annealing
 
-# Loss Configuration
+# Loss Configuration - Variable specific loss weights
 loss:
-  mae_weight: 1.0
-  mse_weight: 0.1  # Reduced MSE contribution
-  ssim_weight: 0.0  # Disabled SSIM for debugging
+  # Common loss configuration (used when training both variables)
+  common:
+    mae_weight: 0.7
+    mse_weight: 0.7
+    ssim_weight: 0.1
+  
+  # Temperature specific loss weights
+  temperature:
+    mae_weight: 0.5
+    mse_weight: 1.0
+    ssim_weight: 0.1
+  
+  # Precipitation specific loss weights
+  precipitation:
+    mae_weight: 1.0
+    mse_weight: 0.1
+    ssim_weight: 0.2
 
 # Logging and Checkpoints
 logging:
-  save_dir: "logs"
-  name: "merra2-prism-downscaling-debug"
-  version: null  # Auto-increment
-  log_graph: true
-  tensorboard: true
-  wandb: false  # Disabled for debugging
-  wandb_project: "merra2-prism-downscaling"
-  wandb_entity: null
-  wandb_tags: ["prithvi", "downscaling", "merra2", "prism", "debug"]
-  wandb_notes: "Debugging run to identify NaN values"
-  nan_debugging:
-    enabled: true  # Enable special NaN debugging logs
-    log_detailed_stats: true  # Log detailed tensor statistics
-    log_layer_outputs: false  # Don't log outputs from each layer (can be large)
-    check_every_n_steps: 5  # Check model parameters every N steps
-
-# Hardware
-hardware:
-  accelerator: "cpu"  # Use CPU to avoid MPS memory issues
-  devices: 1
-  num_workers: 0  # Single-threaded loading for debugging
-  pin_memory: false  # Disable pin_memory when using CPU
+  save_dir: "logs"  # Directory to save logs
+  name: "merra2-prism-downscaling"  # Base experiment name
+  version: null  # Version (auto-increment if null)
+  log_graph: true  # Log model graph
+  tensorboard: true  # Enable TensorBoard logging
   
-# Cluster Settings (for future use)
+  # Weights & Biases configuration
+  wandb: true  # Enable Weights & Biases logging
+  wandb_project: "prithvi-downscaling"  # W&B project name
+  wandb_entity: null  # W&B entity
+  wandb_tags: ["prithvi", "downscaling", "merra2", "prism"]  # Base W&B tags
+  wandb_notes: "Downscaling model with variable selection"  # W&B notes
+  
+  # Debugging configuration
+  debug: false  # Disable debug mode for production
+  nan_debugging:
+    enabled: true  # Keep NaN debugging enabled
+    log_detailed_stats: true  # Log detailed tensor statistics
+    log_layer_outputs: false  # Don't log outputs from each layer
+    check_every_n_steps: 10  # Check model parameters less frequently
+
+# Hardware Configuration
+hardware:
+  accelerator: "gpu"  # Use GPU for faster training
+  devices: 1  # Number of devices to use
+  num_workers: 4  # Increased workers for faster data loading
+  pin_memory: true  # Enable pin memory for GPU
+  device: "cuda"  # Device for model (cuda for NVIDIA GPUs)
+
+# Cluster Configuration
 cluster:
-  enabled: false
-  distributed_backend: "ddp"
-  sync_batchnorm: true
-  strategy: "ddp"
-  find_unused_parameters: false 
+  enabled: false  # Disable cluster mode for single GPU
+  strategy: "auto"  # Training strategy (auto, ddp, etc.)
+  sync_batchnorm: true  # Synchronize batch normalization
+  find_unused_parameters: false  # Find unused parameters 

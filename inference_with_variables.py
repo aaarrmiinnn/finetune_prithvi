@@ -1,7 +1,8 @@
 #!/usr/bin/env python
+# Renamed from inference_separate_variables.py to inference_with_variables.py
 """
-Script to run inference with separate temperature and precipitation models
-and combine their outputs into a unified prediction.
+Script to run inference with variable selection.
+This script supports inference with models trained on different variable combinations.
 """
 
 import os
@@ -12,7 +13,7 @@ import numpy as np
 import yaml
 from pathlib import Path
 import matplotlib.pyplot as plt
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Union
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,18 +24,54 @@ from src.utils import load_config, setup_paths, get_experiment_name
 from src.visualizations import visualize_predictions
 
 
-def load_model(config_path: str, checkpoint_path: str) -> Tuple[Dict[str, Any], DownscalingModule]:
-    """Load a model from a checkpoint using the specified config.
+def modify_config_for_variables(config_path: str, variables: List[str]) -> Dict[str, Any]:
+    """Modify the config to use specific variables.
+    
+    Args:
+        config_path: Path to the base config file
+        variables: List of variables to use
+        
+    Returns:
+        Modified config dict
+    """
+    # Load the base config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Update the target variables
+    config['data']['target_vars'] = variables
+    
+    # If we have a single variable, apply the variable-specific settings
+    if len(variables) == 1:
+        var_map = {'tdmean': 'temperature', 'ppt': 'precipitation'}
+        var_type = var_map.get(variables[0], 'common')
+        
+        # Apply model settings
+        if 'variable_config' in config['model'] and var_type in config['model']['variable_config']:
+            for key, value in config['model']['variable_config'][var_type].items():
+                config['model'][key] = value
+        
+        # Apply loss settings
+        if var_type in config['loss']:
+            for key, value in config['loss'][var_type].items():
+                config['loss'][key] = value
+    
+    return config
+
+
+def load_model(config_path: str, checkpoint_path: str, variables: List[str]) -> Tuple[Dict[str, Any], DownscalingModule]:
+    """Load a model from a checkpoint using a config modified for the specified variables.
     
     Args:
         config_path: Path to the model's config file
         checkpoint_path: Path to the model checkpoint
+        variables: List of variables the model was trained on
         
     Returns:
         Tuple of (config, model)
     """
-    # Load and set up config
-    config = load_config(config_path)
+    # Modify config for the variables
+    config = modify_config_for_variables(config_path, variables)
     config = setup_paths(config)
     
     # Load the model
@@ -63,40 +100,9 @@ def run_inference(input_data: torch.Tensor, model: DownscalingModule) -> torch.T
         return model(input_data)
 
 
-def combine_predictions(
-    temp_pred: torch.Tensor,
-    precip_pred: torch.Tensor,
-    temp_config: Dict[str, Any],
-    precip_config: Dict[str, Any]
-) -> Dict[str, torch.Tensor]:
-    """Combine predictions from temperature and precipitation models.
-    
-    Args:
-        temp_pred: Temperature prediction tensor
-        precip_pred: Precipitation prediction tensor
-        temp_config: Temperature model config
-        precip_config: Precipitation model config
-        
-    Returns:
-        Dictionary with combined predictions
-    """
-    # Create combined tensor
-    combined_pred = torch.cat([temp_pred, precip_pred], dim=1)
-    
-    # Create mapping for the combined variables
-    combined_vars = temp_config['data']['target_vars'] + precip_config['data']['target_vars']
-    
-    return {
-        'combined_prediction': combined_pred,
-        'target_vars': combined_vars,
-        'temp_prediction': temp_pred,
-        'precip_prediction': precip_pred
-    }
-
-
 def save_visualizations(
     input_data: torch.Tensor, 
-    predictions: Dict[str, torch.Tensor],
+    prediction: torch.Tensor,
     target: Optional[torch.Tensor],
     input_vars: List[str],
     target_vars: List[str],
@@ -106,7 +112,7 @@ def save_visualizations(
     
     Args:
         input_data: Input tensor
-        predictions: Dictionary with prediction tensors
+        prediction: Prediction tensor
         target: Optional target tensor for comparison
         input_vars: List of input variable names
         target_vars: List of target variable names
@@ -139,12 +145,9 @@ def save_visualizations(
     for i, var in enumerate(target_vars):
         row = i + 1  # +1 because first row is input
         
-        # Get index of this variable in the combined prediction
-        var_idx = target_vars.index(var)
-        
         # Plot prediction
         pred_ax = axes[row, 1] if target is not None else axes[row, 1]
-        pred_data = predictions['combined_prediction'][0, var_idx].cpu().numpy()
+        pred_data = prediction[0, i].cpu().numpy()
         im = pred_ax.imshow(pred_data)
         pred_ax.set_title(f"Prediction: {var}")
         plt.colorbar(im, ax=pred_ax)
@@ -152,7 +155,7 @@ def save_visualizations(
         # Plot target if available
         if target is not None:
             target_ax = axes[row, 2]
-            target_data = target[0, var_idx].cpu().numpy()
+            target_data = target[0, i].cpu().numpy()
             im = target_ax.imshow(target_data)
             target_ax.set_title(f"Target: {var}")
             plt.colorbar(im, ax=target_ax)
@@ -168,24 +171,24 @@ def save_visualizations(
             axes[row, 0].axis('off')
     
     # Save the figure
-    plt.savefig(os.path.join(output_dir, 'combined_predictions.png'), dpi=300)
+    plt.savefig(os.path.join(output_dir, 'predictions.png'), dpi=300)
     plt.close(fig)
     
     print(f"Visualizations saved to {output_dir}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run inference with separate temperature and precipitation models")
+    parser = argparse.ArgumentParser(description="Run inference with a trained model")
     
     # Config and checkpoint paths
-    parser.add_argument("--temp-config", type=str, default="src/config/temperature_config.yaml",
-                        help="Path to temperature model config")
-    parser.add_argument("--precip-config", type=str, default="src/config/precipitation_config.yaml",
-                        help="Path to precipitation model config")
-    parser.add_argument("--temp-checkpoint", type=str, required=True,
-                        help="Path to temperature model checkpoint")
-    parser.add_argument("--precip-checkpoint", type=str, required=True,
-                        help="Path to precipitation model checkpoint")
+    parser.add_argument("--config", type=str, default="src/config/config.yaml",
+                        help="Path to base config file")
+    parser.add_argument("--checkpoint", type=str, required=True,
+                        help="Path to model checkpoint")
+    
+    # Variable selection
+    parser.add_argument("--variables", type=str, default="tdmean,ppt",
+                        help="Comma-separated list of variables the model was trained on")
     
     # Input data options
     parser.add_argument("--input-file", type=str, default=None,
@@ -201,39 +204,28 @@ def main():
     
     args = parser.parse_args()
     
-    # Load models
-    temp_config, temp_model = load_model(args.temp_config, args.temp_checkpoint)
-    precip_config, precip_model = load_model(args.precip_config, args.precip_checkpoint)
+    # Parse variables
+    variables = args.variables.split(',')
+    print(f"Running inference for variables: {variables}")
     
-    # Ensure we're using the same device for both models
-    device = temp_config['hardware']['device']
-    temp_model.to(device)
-    precip_model.to(device)
+    # Load model
+    config, model = load_model(args.config, args.checkpoint, variables)
     
     # Get input data
     if args.use_test_data:
-        # Create dataloaders using the temperature config (input data is the same for both)
+        # Create dataloaders
         _, _, test_loader = create_dataloaders(
-            temp_config,
-            train_split=temp_config['data']['train_test_split'][0],
-            val_split=temp_config['data']['train_test_split'][1],
-            test_split=temp_config['data']['train_test_split'][2],
-            num_workers=temp_config['hardware']['num_workers']
+            config,
+            train_split=config['data']['train_test_split'][0],
+            val_split=config['data']['train_test_split'][1],
+            test_split=config['data']['train_test_split'][2],
+            num_workers=config['hardware']['num_workers']
         )
         
         # Get a batch from the test dataloader
         batch = next(iter(test_loader))
-        input_data = batch['merra2_input'].to(device)
-        target = batch['prism_target'].to(device)
-        
-        # Note: target contains both temperature and precipitation targets
-        # We need to split it according to the config
-        temp_target_idx = 0  # tdmean is first
-        precip_target_idx = 1  # ppt is second
-        
-        # Create separate targets
-        temp_target = target[:, temp_target_idx:temp_target_idx+1]
-        precip_target = target[:, precip_target_idx:precip_target_idx+1]
+        input_data = batch['merra2_input'].to(config['hardware']['device'])
+        target = batch['prism_target'].to(config['hardware']['device'])
     else:
         # Load custom input file
         if args.input_file is None:
@@ -244,45 +236,38 @@ def main():
         raise NotImplementedError("Custom input file loading not implemented yet")
     
     # Run inference
-    temp_pred = run_inference(input_data, temp_model)
-    precip_pred = run_inference(input_data, precip_model)
-    
-    # Combine predictions
-    combined_preds = combine_predictions(temp_pred, precip_pred, temp_config, precip_config)
+    prediction = run_inference(input_data, model)
     
     # Save visualizations if requested
     if args.visualize:
         save_visualizations(
             input_data,
-            combined_preds,
+            prediction,
             target if args.use_test_data else None,
-            temp_config['data']['input_vars'],
-            combined_preds['target_vars'],
+            config['data']['input_vars'],
+            variables,
             args.output_dir
         )
     
     # Create metadata for saving
     metadata = {
-        'temp_model': {
-            'config': args.temp_config,
-            'checkpoint': args.temp_checkpoint
+        'model': {
+            'config': args.config,
+            'checkpoint': args.checkpoint,
+            'variables': variables
         },
-        'precip_model': {
-            'config': args.precip_config,
-            'checkpoint': args.precip_checkpoint
-        },
-        'target_vars': combined_preds['target_vars'],
-        'input_vars': temp_config['data']['input_vars'],
+        'input_vars': config['data']['input_vars'],
+        'target_vars': variables,
         'timestamp': torch.datetime.datetime.now().isoformat()
     }
     
     # Save predictions and metadata
     os.makedirs(args.output_dir, exist_ok=True)
-    output_file = os.path.join(args.output_dir, 'combined_predictions.npz')
+    output_file = os.path.join(args.output_dir, f"{'_'.join(variables)}_predictions.npz")
     
     # Convert tensors to numpy for saving
     np_preds = {
-        'combined_prediction': combined_preds['combined_prediction'].cpu().numpy(),
+        'prediction': prediction.cpu().numpy(),
         'input_data': input_data.cpu().numpy(),
     }
     
