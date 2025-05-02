@@ -75,6 +75,13 @@ logging:
   wandb_tags: ["prithvi", "downscaling", "merra2", "prism", "multi-gpu"]
   wandb_notes: "Multi-GPU training with distributed strategy"
 
+# Cluster Configuration
+cluster:
+  enabled: true
+  strategy: "ddp"
+  sync_batchnorm: true
+  find_unused_parameters: false
+
 # Hardware Configuration - Multi-GPU Setup
 hardware:
   accelerator: "gpu"
