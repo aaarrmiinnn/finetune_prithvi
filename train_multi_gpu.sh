@@ -1,6 +1,5 @@
 #!/bin/bash
 # Multi-GPU training script optimized for distributed training
-# This script automatically detects and uses all available GPUs and CPU cores
 
 # Set environment variables for better GPU and CPU performance
 export PYTHONUNBUFFERED=1
@@ -19,85 +18,16 @@ echo "CPU Cores: $(nproc)"
 mkdir -p logs
 mkdir -p models/checkpoints
 mkdir -p cache
-mkdir -p src/config
 
-# Create a temporary modified config file with multi-GPU settings
-CONFIG_FILE="src/config/config.yaml"
-TEMP_CONFIG_FILE="src/config/config_multi_gpu.yaml"
-
-# Check available GPUs and CPU cores and create config
-CONFIG_CREATED=$(python -c "
+# Check available GPUs and adjust workers
+python -c "
 import torch
 import os
-import yaml
-import math
-import sys
-
-try:
-    # Load the base config
-    with open('$CONFIG_FILE', 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Get number of available GPUs
-    num_gpus = torch.cuda.device_count()
-    print(f'Available GPUs: {num_gpus}')
-    if num_gpus > 0:
-        for i in range(num_gpus):
-            print(f'GPU {i}: {torch.cuda.get_device_name(i)}')
-
-    # Get number of CPU cores
-    num_cores = os.cpu_count()
-    print(f'Available CPU cores: {num_cores}')
-
-    # Configure for multi-GPU training
-    if num_gpus > 0:
-        # Hardware settings
-        config['hardware']['accelerator'] = 'gpu'
-        config['hardware']['devices'] = num_gpus
-        config['hardware']['num_workers'] = max(4, num_cores // num_gpus)  # Distribute cores among GPUs
-        config['hardware']['pin_memory'] = True
-        
-        # Distributed training settings
-        config['distributed']['enabled'] = True
-        config['distributed']['strategy'] = 'ddp'
-        config['distributed']['sync_batchnorm'] = True
-        config['distributed']['find_unused_parameters'] = False
-        
-        # Adjust batch size and learning rate for multi-GPU
-        base_batch_size = config['training']['batch_size']
-        config['training']['batch_size'] = base_batch_size * num_gpus
-        config['training']['optimizer']['lr'] *= math.sqrt(num_gpus)  # Scale learning rate with sqrt of number of GPUs
-        
-        # Memory optimizations
-        config['training']['precision'] = 16  # Use mixed precision
-        config['model']['gradient_checkpointing'] = True  # Enable gradient checkpointing
-        
-        print(f'Configured for {num_gpus} GPUs:')
-        print(f'- Total batch size: {config[\"training\"][\"batch_size\"]} ({base_batch_size} per GPU)')
-        print(f'- Workers per GPU: {config[\"hardware\"][\"num_workers\"]}')
-        print(f'- Learning rate: {config[\"training\"][\"optimizer\"][\"lr\"]:.2e}')
-    else:
-        print('No GPUs available, falling back to CPU training')
-        config['hardware']['accelerator'] = 'cpu'
-        config['hardware']['devices'] = 1
-        config['hardware']['num_workers'] = num_cores
-        config['hardware']['pin_memory'] = False
-        config['distributed']['enabled'] = False
-
-    # Save the multi-GPU config
-    with open('$TEMP_CONFIG_FILE', 'w') as f:
-        yaml.dump(config, f, default_flow_style=False)
-    print('true')  # Indicate success
-except Exception as e:
-    print(f'Error creating config: {str(e)}', file=sys.stderr)
-    print('false')  # Indicate failure
-")
-
-# Check if config was created successfully
-if [ "$CONFIG_CREATED" != "true" ]; then
-    echo "Failed to create multi-GPU config. Exiting."
-    exit 1
-fi
+print(f'Available GPUs: {torch.cuda.device_count()}')
+if torch.cuda.device_count() > 0:
+    for i in range(torch.cuda.device_count()):
+        print(f'GPU {i}: {torch.cuda.get_device_name(i)}')
+print(f'Available CPU cores: {os.cpu_count()}')"
 
 # Empty GPU cache before starting
 python -c "
@@ -111,11 +41,8 @@ if torch.cuda.is_available():
 # Start distributed training
 echo "Starting multi-GPU training..."
 python src/main.py \
-  --config $TEMP_CONFIG_FILE \
+  --config src/config/config_multi_gpu.yaml \
   --mode train \
   --cluster
-
-# Clean up temporary config
-rm -f $TEMP_CONFIG_FILE  # -f flag prevents error if file doesn't exist
 
 echo "Training completed!" 

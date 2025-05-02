@@ -1,0 +1,90 @@
+# Data Configuration
+data:
+  merra2_dir: "data/merra2"
+  prism_dir: "data/prism"
+  dem_dir: "data/dem"
+  dem_file: "PRISM_us_dem_4km_bil.bil"
+  cache_dir: "cache"
+  dates: []
+  spatial_extent: null
+  patch_size: 32
+  input_vars: ["T2MMAX", "T2MMEAN", "T2MMIN", "TPRECMAX"]
+  target_vars: ["tdmean", "ppt"]
+  mask_ratio: 0.15
+  patch_stride: null
+  train_test_split: [0.7, 0.15, 0.15]
+  normalize_inputs: true
+  normalize_targets: true
+  normalize_dem: true
+  clip_extreme_values: true
+  validate_data: true
+  replace_nan_with_mean: true
+
+# Model Configuration - Optimized for Multi-GPU
+model:
+  name: "Prithvi-WxC-1.0"
+  prithvi_checkpoint: "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M"
+  cache_dir: "models/cache"
+  use_pretrained: true
+  freeze_encoder: true
+  hidden_dim: 256
+  device: "cuda"
+  gradient_checkpointing: true  # Enabled for memory efficiency
+
+# Training Configuration - Multi-GPU Optimized
+training:
+  epochs: 100
+  batch_size: 128  # Increased for multi-GPU (32 per GPU for 4 GPUs)
+  precision: 16  # Mixed precision for better performance
+  
+  optimizer:
+    name: "AdamW"
+    lr: 0.0002  # Scaled for multi-GPU (base_lr * sqrt(num_gpus))
+    weight_decay: 0.01
+    epsilon: 1e-8
+  
+  scheduler:
+    name: "cosine"
+    warmup_epochs: 5
+    min_lr: 1e-6
+  
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  val_check_interval: 1.0
+  log_every_n_steps: 50
+  detect_anomaly: true
+  save_top_k: 3
+  resume_from_checkpoint: null
+
+# Loss Configuration
+loss:
+  mae_weight: 1.0
+  mse_weight: 1.0
+  ssim_weight: 0.1
+
+# Logging Configuration
+logging:
+  save_dir: "logs"
+  name: "merra2-prism-downscaling-multi-gpu"
+  version: null
+  log_graph: true
+  tensorboard: true
+  wandb: true
+  wandb_project: "merra2-prism-downscaling"
+  wandb_entity: null
+  wandb_tags: ["prithvi", "downscaling", "merra2", "prism", "multi-gpu"]
+  wandb_notes: "Multi-GPU training with distributed strategy"
+
+# Hardware Configuration - Multi-GPU Setup
+hardware:
+  accelerator: "gpu"
+  devices: -1  # Use all available GPUs
+  num_workers: 4  # Will be adjusted per GPU in the training script
+  pin_memory: true
+
+# Distributed Training Configuration
+distributed:
+  enabled: true
+  strategy: "ddp"
+  sync_batchnorm: true
+  find_unused_parameters: false 
