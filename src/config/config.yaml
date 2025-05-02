@@ -13,6 +13,7 @@ data:
   patch_size: 32
   input_vars: ["T2MMAX", "T2MMEAN", "T2MMIN", "TPRECMAX"]
   target_vars: ["tdmean", "ppt"]
+  mask_ratio: 0.15  # Ratio of input data to mask during training
   
   # Data preprocessing
   train_test_split: [0.7, 0.15, 0.15]  # Train, val, test split
