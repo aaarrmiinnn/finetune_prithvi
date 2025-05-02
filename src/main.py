@@ -5,6 +5,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 
 from src.utils import load_config, setup_paths, get_experiment_name
 from src.data import create_dataloaders
@@ -49,7 +51,33 @@ def parse_args():
     return parser.parse_args()
 
 
-def train(config, cluster_mode=False, memory_efficient=False, detect_anomaly=False):
+def setup_distributed(rank, world_size):
+    """Initialize distributed training.
+    
+    Args:
+        rank: Rank of the current process.
+        world_size: Total number of processes.
+    """
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    
+    # Initialize process group
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        world_size=world_size,
+        rank=rank
+    )
+    
+    # Set device for this process
+    torch.cuda.set_device(rank)
+
+def cleanup_distributed():
+    """Clean up distributed training resources."""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+def train(config, cluster_mode=False, memory_efficient=False, detect_anomaly=False, multi_gpu=False):
     """Train the model.
     
     Args:
@@ -57,11 +85,26 @@ def train(config, cluster_mode=False, memory_efficient=False, detect_anomaly=Fal
         cluster_mode: Whether to use cluster-specific configurations.
         memory_efficient: Whether to use memory-efficient settings.
         detect_anomaly: Whether to enable PyTorch anomaly detection for debugging NaNs.
+        multi_gpu: Whether to use multi-GPU training.
     """
     # Empty CUDA cache before starting if available
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         print("Emptied CUDA cache before training")
+    
+    # Initialize distributed training if using multiple GPUs
+    if multi_gpu and torch.cuda.device_count() > 1:
+        print(f"Running with multi-GPU configuration (using {torch.cuda.device_count()} GPUs)")
+        world_size = torch.cuda.device_count()
+        
+        # Initialize the process group
+        if not dist.is_initialized():
+            try:
+                setup_distributed(0, world_size)  # Initialize for main process
+                print("Initialized distributed process group")
+            except Exception as e:
+                print(f"Error initializing distributed training: {str(e)}")
+                return None, None
     
     # Enable anomaly detection if requested
     if detect_anomaly:
@@ -324,30 +367,31 @@ def predict(config, checkpoint_path, cluster_mode=False):
 
 def main():
     """Main function."""
-    # Parse arguments
     args = parse_args()
     
     # Load configuration
     config = load_config(args.config)
     
-    # Set up paths and validate configuration
-    config = setup_paths(config)
+    # Set up paths
+    setup_paths(config)
     
-    # Ensure cluster section exists
-    if 'cluster' not in config:
-        config['cluster'] = {'enabled': False, 'strategy': 'auto', 'sync_batchnorm': True, 'find_unused_parameters': False}
-    
-    # Run selected mode
-    if args.mode == "train":
-        model, trainer = train(config, cluster_mode=args.cluster, memory_efficient=args.memory_efficient, detect_anomaly=args.detect_anomaly)
-    elif args.mode == "test":
-        if args.checkpoint is None:
-            raise ValueError("Checkpoint path must be provided for test mode")
-        results = test(config, args.checkpoint, cluster_mode=args.cluster)
-    elif args.mode == "predict":
-        if args.checkpoint is None:
-            raise ValueError("Checkpoint path must be provided for predict mode")
-        results = predict(config, args.checkpoint, cluster_mode=args.cluster)
+    try:
+        if args.mode == "train":
+            model, trainer = train(
+                config,
+                cluster_mode=args.cluster,
+                memory_efficient=args.memory_efficient,
+                detect_anomaly=args.detect_anomaly,
+                multi_gpu=True if args.cluster and torch.cuda.device_count() > 1 else False
+            )
+            print("Multi-GPU training completed!")
+        elif args.mode == "test":
+            test(config, args.checkpoint, cluster_mode=args.cluster)
+        elif args.mode == "predict":
+            predict(config, args.checkpoint, cluster_mode=args.cluster)
+    finally:
+        # Clean up distributed training resources
+        cleanup_distributed()
 
 
 if __name__ == "__main__":

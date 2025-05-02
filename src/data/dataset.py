@@ -9,6 +9,8 @@ from torch.utils.data import Dataset, DataLoader
 import xarray as xr
 from typing import Dict, List, Tuple, Optional, Union, Callable, Any
 from pathlib import Path
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
 
 from .preprocessing import (
     prepare_merra2_prism_pair,
@@ -336,15 +338,15 @@ def create_dataloaders(
     test_split: float = 0.15,
     num_workers: int = 4
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Create train, validation, and test data loaders.
+    """Create data loaders for training, validation, and testing.
     
     Args:
         config: Configuration dictionary.
         train_split: Fraction of data to use for training.
         val_split: Fraction of data to use for validation.
         test_split: Fraction of data to use for testing.
-        num_workers: Number of workers for data loading.
-        
+        num_workers: Number of worker processes for data loading.
+    
     Returns:
         Tuple of (train_loader, val_loader, test_loader).
     """
@@ -552,29 +554,56 @@ def create_dataloaders(
     val_indices = indices[train_size:train_size + val_size]
     test_indices = indices[train_size + val_size:]
     
-    # Create data loaders
+    # Check if we're in distributed training mode
+    is_distributed = dist.is_initialized()
+    
+    if is_distributed:
+        print("Creating distributed data samplers")
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+        print(f"Distributed setup - Rank: {rank}, World Size: {world_size}")
+
+    # Create samplers for distributed training
+    train_sampler = DistributedSampler(
+        torch.utils.data.Subset(full_dataset, train_indices)
+    ) if is_distributed else None
+    
+    val_sampler = DistributedSampler(
+        torch.utils.data.Subset(full_dataset, val_indices),
+        shuffle=False
+    ) if is_distributed else None
+    
+    test_sampler = DistributedSampler(
+        torch.utils.data.Subset(full_dataset, test_indices),
+        shuffle=False
+    ) if is_distributed else None
+
+    # Create data loaders with appropriate samplers
     train_loader = DataLoader(
         torch.utils.data.Subset(full_dataset, train_indices),
-        batch_size=batch_size,
-        shuffle=True,
+        batch_size=config['training']['batch_size'],
+        shuffle=(train_sampler is None),  # Don't shuffle if using distributed sampler
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        sampler=train_sampler
     )
     
     val_loader = DataLoader(
         torch.utils.data.Subset(full_dataset, val_indices),
-        batch_size=batch_size,
+        batch_size=config['training']['batch_size'],
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        sampler=val_sampler
     )
     
     test_loader = DataLoader(
         torch.utils.data.Subset(full_dataset, test_indices),
-        batch_size=batch_size,
+        batch_size=config['training']['batch_size'],
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        sampler=test_sampler
     )
     
     return train_loader, val_loader, test_loader 
