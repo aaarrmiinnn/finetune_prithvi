@@ -7,11 +7,11 @@ data:
   cache_dir: "cache"
   dates: []
   spatial_extent: null
-  patch_size: 32
+  patch_size: 64
   input_vars: ["T2MMAX", "T2MMEAN", "T2MMIN", "TPRECMAX"]
   target_vars: ["tdmean", "ppt"]
   mask_ratio: 0.15
-  patch_stride: null
+  patch_stride: 32
   train_test_split: [0.7, 0.15, 0.15]
   normalize_inputs: true
   normalize_targets: true
@@ -34,7 +34,7 @@ model:
 # Training Configuration - Multi-GPU Optimized
 training:
   epochs: 100
-  batch_size: 128  # Increased for multi-GPU (32 per GPU for 4 GPUs)
+  batch_size: 64  # Reduced to account for larger patches (16 per GPU for 4 GPUs)
   precision: 16  # Mixed precision for better performance
   
   optimizer:
