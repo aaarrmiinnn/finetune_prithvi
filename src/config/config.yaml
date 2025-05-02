@@ -14,6 +14,7 @@ data:
   input_vars: ["T2MMAX", "T2MMEAN", "T2MMIN", "TPRECMAX"]
   target_vars: ["tdmean", "ppt"]
   mask_ratio: 0.15  # Ratio of input data to mask during training
+  patch_stride: null  # If null, use patch_size
   
   # Data preprocessing
   train_test_split: [0.7, 0.15, 0.15]  # Train, val, test split
@@ -21,6 +22,8 @@ data:
   normalize_targets: true
   normalize_dem: true
   clip_extreme_values: true  # Clip values outside of [mean-3*std, mean+3*std]
+  validate_data: true  # Enable data validation
+  replace_nan_with_mean: true  # Replace NaNs with mean values
 
 # Model Configuration
 model:
@@ -28,8 +31,10 @@ model:
   prithvi_checkpoint: "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M"  # Model name or path
   cache_dir: "models/cache"
   use_pretrained: true
-  freeze_encoder: false  # Can be overridden by memory efficient script
+  freeze_encoder: true  # Freeze encoder by default for stability
   hidden_dim: 256
+  device: "auto"  # Let PyTorch decide based on availability
+  gradient_checkpointing: false  # Can be enabled for memory efficiency
 
 # Training Configuration
 training:
@@ -55,6 +60,8 @@ training:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   val_check_interval: 1.0
+  log_every_n_steps: 50
+  detect_anomaly: true  # Enable PyTorch anomaly detection
   
   # Checkpointing
   save_top_k: 3
@@ -70,10 +77,14 @@ loss:
 logging:
   save_dir: "logs"
   name: "merra2-prism-downscaling"
+  version: null  # Auto-increment
+  log_graph: true
   tensorboard: true
   wandb: true
   wandb_project: "merra2-prism-downscaling"
+  wandb_entity: null
   wandb_tags: ["prithvi", "downscaling", "merra2", "prism"]
+  wandb_notes: "Downscaling with frozen encoder"
 
 # Hardware Configuration
 hardware:
