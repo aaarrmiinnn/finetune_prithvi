@@ -25,7 +25,7 @@ data:
 # Model Configuration
 model:
   name: "Prithvi-WxC-1.0"
-  checkpoint: "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M"
+  prithvi_checkpoint: "ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M"  # Model name or path
   cache_dir: "models/cache"
   use_pretrained: true
   freeze_encoder: false  # Can be overridden by memory efficient script
