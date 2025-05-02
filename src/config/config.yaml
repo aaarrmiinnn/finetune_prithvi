@@ -46,7 +46,7 @@ training:
   # Optimizer settings
   optimizer:
     name: "AdamW"
-    lr: 1e-4
+    lr: 0.0001  # Changed from 1e-4 to explicit float
     weight_decay: 0.01
     epsilon: 1e-8
   

@@ -62,6 +62,6 @@ def get_experiment_name(config: Dict[str, Any]) -> str:
     model_name = config['model']['prithvi_checkpoint'].split('/')[-1]
     freeze_str = "frozen" if config['model']['freeze_encoder'] else "unfrozen"
     batch_size = config['training']['batch_size']
-    lr = config['training']['optimizer']['lr']
+    lr = float(config['training']['optimizer']['lr'])  # Ensure lr is float
     
     return f"{model_name}_{freeze_str}_bs{batch_size}_lr{lr:.1e}" 

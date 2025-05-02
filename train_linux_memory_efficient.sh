@@ -47,7 +47,7 @@ config['training']['accumulate_grad_batches'] = 4
 config['training']['precision'] = 16
 
 # Optimizer adjustments for stability
-config['training']['optimizer']['lr'] = 1e-5
+config['training']['optimizer']['lr'] = 0.00001
 config['training']['gradient_clip_val'] = 0.5
 
 # Save the memory-efficient config
