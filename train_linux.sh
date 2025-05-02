@@ -1,9 +1,9 @@
 #!/bin/bash
-# Simple training script for Linux systems with GPU
+# Standard training script for Linux systems
 
 # Set environment variables for better GPU performance
-export CUDA_VISIBLE_DEVICES=0
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Add the current directory to Python path to fix module imports
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
@@ -17,65 +17,23 @@ mkdir -p logs
 mkdir -p models/checkpoints
 mkdir -p cache
 
-# Create a temporary modified config file that removes the problematic parameter
-CONFIG_FILE="src/config/config.yaml"
-TEMP_CONFIG_FILE="src/config/config_linux_temp.yaml"
-
-# Create a copy of the config file with modified cluster settings
-cp $CONFIG_FILE $TEMP_CONFIG_FILE
-
 # Check if CUDA is available using PyTorch
 CUDA_AVAILABLE=$(python -c "import torch; print(torch.cuda.is_available())")
 
 if [ "$CUDA_AVAILABLE" = "True" ]; then
-    echo "PyTorch CUDA is available, configuring for GPU training"
-    # Update the hardware and cluster settings for GPU
-    sed -i 's/accelerator: "cpu"/accelerator: "gpu"/' $TEMP_CONFIG_FILE
-    sed -i 's/devices: 1/devices: 1/' $TEMP_CONFIG_FILE
-    sed -i 's/precision: 32/precision: 16/' $TEMP_CONFIG_FILE
-    
-    # Don't comment out find_unused_parameters, but set it to false
-    sed -i 's/find_unused_parameters: false/find_unused_parameters: false/' $TEMP_CONFIG_FILE
-    
-    sed -i 's/strategy: "ddp"/strategy: "auto"/' $TEMP_CONFIG_FILE
-    
-    # Most importantly: Update the device setting for model to match accelerator
-    sed -i 's/device: "cpu"/device: "cuda"/' $TEMP_CONFIG_FILE
-    
-    # Enable pin_memory for faster data transfer to GPU
-    sed -i 's/pin_memory: false/pin_memory: true/' $TEMP_CONFIG_FILE
-    
-    # Increase number of workers for better GPU utilization
-    sed -i 's/num_workers: 0/num_workers: 2/' $TEMP_CONFIG_FILE
-    
-    # Force cluster settings to be enabled with GPU
-    sed -i 's/enabled: false/enabled: true/' $TEMP_CONFIG_FILE
-    
-    # Print CUDA info for debugging
+    echo "PyTorch CUDA is available"
     python -c "import torch; print('CUDA Devices:', torch.cuda.device_count()); print('Current Device:', torch.cuda.current_device()); print('Device Name:', torch.cuda.get_device_name(0))"
 else
-    echo "PyTorch CUDA not available, configuring for CPU training"
-    # Keep accelerator as CPU and make sure model device also uses CPU
-    sed -i 's/accelerator: "gpu"/accelerator: "cpu"/' $TEMP_CONFIG_FILE
-    sed -i 's/device: "cuda"/device: "cpu"/' $TEMP_CONFIG_FILE
-    
-    # Don't comment out find_unused_parameters, but set it to false
-    sed -i 's/find_unused_parameters: false/find_unused_parameters: false/' $TEMP_CONFIG_FILE
-    
-    sed -i 's/strategy: "ddp"/strategy: "auto"/' $TEMP_CONFIG_FILE
-    
-    # Disable pin_memory for CPU training
-    sed -i 's/pin_memory: true/pin_memory: false/' $TEMP_CONFIG_FILE
+    echo "PyTorch CUDA not available, will use CPU"
 fi
 
-# Explicitly set cluster mode to ensure GPU use
-echo "Running with --cluster flag to ensure GPU usage"
-python src/main.py \
-  --config $TEMP_CONFIG_FILE \
-  --mode train \
-  --cluster
+# Empty GPU cache before starting
+python -c "import torch; torch.cuda.empty_cache() if torch.cuda.is_available() else print('No CUDA available to empty cache')"
 
-# Clean up the temporary config file
-rm $TEMP_CONFIG_FILE
+# Start training
+echo "Starting training..."
+python src/main.py \
+  --config src/config/config.yaml \
+  --mode train
 
 echo "Training completed!" 

@@ -1,9 +1,8 @@
 #!/bin/bash
-# Memory-efficient training script for Linux systems with GPU
-# This script freezes the Prithvi backbone and only trains adapter layers
+# Memory-efficient training script for Linux systems
+# This script freezes the Prithvi backbone and uses other memory optimizations
 
 # Set environment variables for better GPU performance and memory management
-export CUDA_VISIBLE_DEVICES=0
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 # Add the current directory to Python path to fix module imports
@@ -13,7 +12,6 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 echo "Starting memory-efficient training on Linux system..."
 echo "Python version: $(python --version)"
 echo "Using GPU for training with memory optimizations..."
-echo "NOTE: This script freezes the Prithvi backbone and only trains adapter layers"
 
 # Create directories if they don't exist
 mkdir -p logs
@@ -30,108 +28,41 @@ CUDA_AVAILABLE=$(python -c "import torch; print(torch.cuda.is_available())")
 if [ "$CUDA_AVAILABLE" = "True" ]; then
     echo "PyTorch CUDA is available, configuring for memory-efficient GPU training"
     
-    # Use Python to update the config file safely (instead of multiple sed commands)
-    python update_config.py --input $CONFIG_FILE --output $TEMP_CONFIG_FILE
-    
-    # Add additional stability measures for NaN prevention
+    # Create memory-efficient config
     python -c "
 import yaml
-with open('$TEMP_CONFIG_FILE', 'r') as f:
-    config = yaml.safe_load(f)
-# Set an even lower learning rate with longer warmup
-config['training']['optimizer']['lr'] = 1e-6  # Lower learning rate
-config['training']['scheduler']['warmup_epochs'] = 5  # Longer warmup
-config['training']['gradient_clip_val'] = 0.5  # Lower gradient clipping
-# Add data validation checks
-config['data']['validate_data'] = True  # Enable data validation
-config['data']['clip_extreme_values'] = True  # Clip extreme values
-config['data']['replace_nan_with_mean'] = True  # Replace NaNs with mean values
-# Add NaN detection during training
-config['training']['detect_anomaly'] = True  # Enable PyTorch anomaly detection
-# Enable Weights & Biases logging
-config['logging']['wandb'] = True
-config['logging']['wandb_project'] = 'prithvi-downscaling'
-config['logging']['wandb_tags'] = ['memory-efficient', 'frozen-backbone', 'debugging']
-config['logging']['wandb_notes'] = 'Memory efficient training with NaN detection and frozen backbone'
-# Limit dates to prevent memory issues
-# Instead of auto-detecting all dates (which could be 91+), limit to most recent 15
-# Empty list would auto-detect all dates
-# config['data']['dates'] = []  # This would auto-detect ALL dates (too many)
-# For memory efficiency, limit to 15 recent dates or set specific date range
-# Months 1-4 of 2025 (select a reasonable subset)
-config['data']['dates'] = [
-    '20250315', '20250316', '20250317', '20250318', '20250319',
-    '20250320', '20250321', '20250322', '20250323', '20250324',
-    '20250325', '20250326', '20250327', '20250328', '20250329'
-]
-with open('$TEMP_CONFIG_FILE', 'w') as f:
-    yaml.dump(config, f, default_flow_style=False)
-"
-    
-    # Print CUDA info for debugging
-    python -c "import torch; print('CUDA Devices:', torch.cuda.device_count()); print('Current Device:', torch.cuda.current_device()); print('Device Name:', torch.cuda.get_device_name(0)); print('Memory Allocated:', torch.cuda.memory_allocated(0)/1024**3, 'GB'); print('Memory Reserved:', torch.cuda.memory_reserved(0)/1024**3, 'GB'); print('Max Memory Allocated:', torch.cuda.max_memory_allocated(0)/1024**3, 'GB')"
-else
-    echo "PyTorch CUDA not available, configuring for CPU training"
-    # Create a CPU-focused config
-    python -c "
-import yaml
+
+# Load the base config
 with open('$CONFIG_FILE', 'r') as f:
     config = yaml.safe_load(f)
-config['hardware']['accelerator'] = 'cpu'
-config['model']['device'] = 'cpu'
-config['training']['epochs'] = 100
-config['model']['freeze_encoder'] = True  # Make sure encoder is frozen
+
+# Memory optimizations
+config['model']['freeze_encoder'] = True
+config['training']['batch_size'] = 8
+config['training']['accumulate_grad_batches'] = 4
+config['training']['precision'] = 16
+
+# Optimizer adjustments for stability
+config['training']['optimizer']['lr'] = 1e-5
+config['training']['gradient_clip_val'] = 0.5
+
+# Save the memory-efficient config
 with open('$TEMP_CONFIG_FILE', 'w') as f:
     yaml.dump(config, f, default_flow_style=False)
 "
+    
+    # Print CUDA memory info
+    python -c "import torch; print('CUDA Devices:', torch.cuda.device_count()); print('Current Device:', torch.cuda.current_device()); print('Device Name:', torch.cuda.get_device_name(0)); print('Memory Allocated:', torch.cuda.memory_allocated(0)/1024**3, 'GB')"
+else
+    echo "PyTorch CUDA not available, configuring for CPU training"
+    cp $CONFIG_FILE $TEMP_CONFIG_FILE
 fi
-
-# Pre-check for NaNs in the dataset
-echo "Validating dataset for NaN values before training..."
-python -c "
-import os
-import sys
-import numpy as np
-import yaml
-import glob
-
-# Load config
-with open('$TEMP_CONFIG_FILE', 'r') as f:
-    config = yaml.safe_load(f)
-
-# Check MERRA2 files
-merra2_dir = config['data']['merra2_dir']
-merra2_files = glob.glob(os.path.join(merra2_dir, '*.nc4'))
-print(f'Checking {len(merra2_files)} MERRA2 files...')
-
-has_nan = False
-try:
-    import xarray as xr
-    for f in merra2_files:
-        try:
-            data = xr.open_dataset(f)
-            for var in config['data']['input_vars']:
-                if var in data:
-                    if np.isnan(data[var].values).any():
-                        print(f'WARNING: NaN values found in {var} in file {f}')
-                        has_nan = True
-        except Exception as e:
-            print(f'Error checking file {f}: {str(e)}')
-except ImportError:
-    print('xarray not available, skipping NaN check')
-
-if has_nan:
-    print('WARNING: NaN values found in input data. This may cause training instability.')
-    print('Consider preprocessing the data to replace or filter NaN values.')
-else:
-    print('No NaN values found in input data.')
-"
 
 # Empty GPU cache before starting
 python -c "import torch; torch.cuda.empty_cache() if torch.cuda.is_available() else print('No CUDA available to empty cache')"
 
-# Validate cache files and remove corrupted ones
-echo "Validating cache files to prevent EOFError..."
+# Validate cache files
+echo "Validating cache files..."
 python -c "
 import os
 import numpy as np
@@ -143,32 +74,25 @@ print(f'Checking {len(cache_files)} cache files...')
 
 for cache_file in cache_files:
     try:
-        # Try to load the file to see if it's valid
         data = np.load(cache_file, allow_pickle=True)
-        # Verify key content exists
         if 'patches' not in data:
             print(f'Warning: Missing data in {cache_file}, removing...')
             os.remove(cache_file)
             continue
-        
-        # Try to access the data to ensure it's readable
         _ = data['patches'].tolist()
         print(f'✓ Valid cache file: {os.path.basename(cache_file)}')
-    except (EOFError, KeyError, ValueError, Exception) as e:
-        # If any error occurs, remove the file
+    except Exception as e:
         print(f'Found corrupted cache file {cache_file}: {str(e)}')
         print(f'Removing {cache_file}...')
         os.remove(cache_file)
 "
 
-# Run with memory efficient settings and anomaly detection
-echo "Running with memory-efficient configuration for 100 epochs (with frozen backbone)"
+# Start training with memory optimizations
+echo "Starting memory-efficient training..."
 python src/main.py \
   --config $TEMP_CONFIG_FILE \
   --mode train \
-  --cluster \
-  --memory_efficient \
-  --detect_anomaly  # Add anomaly detection flag
+  --memory_efficient
 
 # Clean up the temporary config file
 rm $TEMP_CONFIG_FILE
