@@ -33,7 +33,7 @@ model:
   use_pretrained: true
   freeze_encoder: true  # Freeze encoder by default for stability
   hidden_dim: 256
-  device: "auto"  # Let PyTorch decide based on availability
+  device: "cuda"  # Will be overridden to "cpu" if CUDA is not available
   gradient_checkpointing: false  # Can be enabled for memory efficiency
 
 # Training Configuration

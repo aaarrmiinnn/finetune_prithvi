@@ -31,6 +31,7 @@ if [ "$CUDA_AVAILABLE" = "True" ]; then
     # Create memory-efficient config
     python -c "
 import yaml
+import torch
 
 # Load the base config
 with open('$CONFIG_FILE', 'r') as f:
@@ -38,6 +39,9 @@ with open('$CONFIG_FILE', 'r') as f:
 
 # Memory optimizations
 config['model']['freeze_encoder'] = True
+config['model']['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
+config['hardware']['accelerator'] = 'gpu' if torch.cuda.is_available() else 'cpu'
+config['hardware']['pin_memory'] = torch.cuda.is_available()
 config['training']['batch_size'] = 8
 config['training']['accumulate_grad_batches'] = 4
 config['training']['precision'] = 16
